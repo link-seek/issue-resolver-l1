@@ -1,0 +1,188 @@
+name: Discuss
+
+on:
+  workflow_call:
+    inputs:
+      mention:
+        description: 'Mention string that triggers the discuss flow'
+        required: false
+        default: 'oh'
+        type: string
+      issue-mention:
+        description: 'Mention string that triggers the to-issue flow'
+        required: false
+        default: 'issue'
+        type: string
+    secrets:
+      LLM_API_KEY_1:
+        required: true
+      LLM_API_KEY_2:
+        required: true
+      LLM_API_KEY_3:
+        required: true
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+      TAVILY_API_KEY:
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  discussions: write
+
+jobs:
+  discuss:
+    if: |
+      (github.event_name == 'discussion_comment' &&
+        (contains(github.event.comment.body, inputs.mention) || contains(github.event.comment.body, inputs.issue-mention)) &&
+        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER')) ||
+      (github.event_name == 'discussion' &&
+        (contains(github.event.discussion.body, inputs.mention) || contains(github.event.discussion.body, inputs.issue-mention)) &&
+        (github.event.discussion.author_association == 'OWNER' || github.event.discussion.author_association == 'COLLABORATOR' || github.event.discussion.author_association == 'MEMBER'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Determine discuss mode
+        id: mode
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body || github.event.discussion.body }}
+          ISSUE_MENTION: ${{ inputs.issue-mention }}
+        run: |
+          if echo "$COMMENT_BODY" | grep -q "@$ISSUE_MENTION"; then
+            echo "mode=to-issue" >> $GITHUB_OUTPUT
+          else
+            echo "mode=discuss" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install Obscura
+        run: |
+          curl -L https://github.com/h4ckf0r0day/obscura/releases/latest/download/obscura-x86_64-linux.tar.gz -o /tmp/obscura.tar.gz
+          tar xzf /tmp/obscura.tar.gz -C /usr/local/bin/
+          chmod +x /usr/local/bin/obscura
+          obscura --version || true
+
+      - name: Install Playwright
+        run: |
+          npx playwright install --with-deps chromium
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          path: target-repo
+
+      - name: Checkout issue-resolver scripts
+        uses: actions/checkout@v4
+        with:
+          repository: link-seek/issue-resolver
+          ref: main
+          path: issue-resolver-scripts
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Setup LiteLLM proxy
+        shell: bash
+        run: |
+          cat > /tmp/litellm_config.yaml << 'EOF'
+          model_list:
+            - model_name: deepseek-v4-flash
+              litellm_params:
+                model: openai/deepseek-v4-flash
+                api_key: ${{ secrets.LLM_API_KEY_1 }}
+                api_base: https://api.deepseek.com
+            - model_name: deepseek-v4-flash
+              litellm_params:
+                model: openai/deepseek-v4-flash
+                api_key: ${{ secrets.LLM_API_KEY_2 }}
+                api_base: https://api.deepseek.com
+            - model_name: deepseek-v4-flash
+              litellm_params:
+                model: openai/deepseek-v4-flash
+                api_key: ${{ secrets.LLM_API_KEY_3 }}
+                api_base: https://api.deepseek.com
+          router_settings:
+            routing_strategy: simple-shuffle
+            num_retries: 3
+            allowed_fails: 3
+            request_timeout: 120
+          general_settings:
+            master_key: sk-litellm-proxy
+            drop_params: true
+          EOF
+
+          docker run -d --name litellm \
+            -p 4000:4000 \
+            -v /tmp/litellm_config.yaml:/app/config.yaml \
+            ghcr.io/berriai/litellm:main-latest \
+            --config /app/config.yaml --port 4000 --host 0.0.0.0
+
+          echo "Waiting for LiteLLM proxy to be ready..."
+          for i in $(seq 1 60); do
+            if curl -sf -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health > /dev/null 2>&1; then
+              echo "LiteLLM proxy ready (attempt $i)"
+              curl -s -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::LiteLLM proxy failed to start"
+          docker logs litellm 2>&1 | tail -50
+          exit 1
+
+      - name: Run Discussion Agent
+        shell: bash
+        working-directory: target-repo
+        env:
+          LLM_MODEL: openai/deepseek-v4-flash
+          LLM_BASE_URL: http://localhost:4000/v1
+          LLM_API_KEY: sk-litellm-proxy
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+          AGENT_ENABLE_BROWSING: "true"
+          DISCUSSION_NODE_ID: ${{ github.event.discussion.node_id }}
+          REPO_NAME: ${{ github.repository }}
+          DISCUSS_MODE: ${{ steps.mode.outputs.mode }}
+          # For token auto-refresh
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
+            python ../issue-resolver-scripts/scripts/discuss.py
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discuss-logs
+          path: target-repo/*.log
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: discuss-screenshots
+          path: target-repo/screenshots/*.png
+          retention-days: 7
+          if-no-files-found: ignore

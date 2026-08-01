@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Ruff check
+        run: ruff check scripts/ tests/
+
+      - name: Compile check
+        run: |
+          for f in scripts/*.py; do
+            python -m py_compile "$f" || { echo "FAIL: $f"; exit 1; }
+          done
+          echo "All scripts compile OK"
+
+  unit-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: pip install pytest pyyaml
+
+      - name: Run unit tests
+        env:
+          GITHUB_TOKEN: dummy
+        run: pytest tests/ -v
+
+  pipeline-test-non-db:
+    needs: [lint, unit-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run non-db pipeline test
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
+        run: python scripts/validate_pipeline.py non-db
+
+  pipeline-test-db:
+    needs: [lint, unit-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run db pipeline test
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
+        run: python scripts/validate_pipeline.py db
+
+  pipeline-test-discussion:
+    needs: [lint, unit-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run discussion pipeline test
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
+        run: python scripts/validate_pipeline.py discussion
