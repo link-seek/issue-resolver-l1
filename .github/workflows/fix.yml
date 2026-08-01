@@ -121,17 +121,29 @@ jobs:
             FAILED_CHECKS=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
               --jq '.check_runs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"' 2>/dev/null)
 
-            # Download workflow run logs once (check-run logs API often 404s for
-            # GitHub Actions jobs, but workflow-run logs are reliable).
+            # Download workflow run logs from ALL failing runs. The check-run
+            # logs API (check-runs/{id}/logs) 404s for GitHub Actions jobs, so
+            # we rely on workflow-run logs and actions/jobs/{id}/logs (below).
+            # Previously only ONE run was fetched (sort_by(.created_at) | last),
+            # which was non-deterministic when multiple runs share a timestamp
+            # and frequently missed the run containing the real errors.
             WORKFLOW_LOGS_DIR=$(mktemp -d)
-            WORKFLOW_RUN_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&per_page=10" \
-              --jq '[.workflow_runs[] | select(.conclusion == "failure")] | sort_by(.created_at) | last | .id' 2>/dev/null || echo "")
-            if [ -n "$WORKFLOW_RUN_ID" ] && [ "$WORKFLOW_RUN_ID" != "null" ]; then
+            WORKFLOW_RUN_IDS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&per_page=30" \
+              --jq '[.workflow_runs[] | select(.conclusion == "failure")] | sort_by(.created_at) | reverse | .[].id' 2>/dev/null || echo "")
+            for WORKFLOW_RUN_ID in $WORKFLOW_RUN_IDS; do
+              [ -z "$WORKFLOW_RUN_ID" ] && continue
               echo "Fetching workflow run logs for run $WORKFLOW_RUN_ID"
-              if gh api repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/logs > "$WORKFLOW_LOGS_DIR/run-logs.zip" 2>/dev/null; then
-                (cd "$WORKFLOW_LOGS_DIR" && unzip -o -q run-logs.zip 2>/dev/null || true)
+              RUN_ZIP="$WORKFLOW_LOGS_DIR/run-$WORKFLOW_RUN_ID.zip"
+              if gh api repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/logs > "$RUN_ZIP" 2>/dev/null; then
+                # Validate it's actually a zip (GitHub returns JSON 404 on
+                # failure, which unzip rejects silently).
+                if unzip -t -q "$RUN_ZIP" 2>/dev/null; then
+                  (cd "$WORKFLOW_LOGS_DIR" && unzip -o -q "$RUN_ZIP" 2>/dev/null || true)
+                else
+                  rm -f "$RUN_ZIP"
+                fi
               fi
-            fi
+            done
 
             while IFS=$'\t' read -r CHECK_ID CHECK_NAME; do
               [ -z "$CHECK_ID" ] && continue
@@ -143,13 +155,29 @@ jobs:
                 CI_FAILURES+="\nStructured annotations:\n\`\`\`\n$ANNOTATIONS\n\`\`\`\n"
               fi
 
-              # Gather logs from the workflow-run logs downloaded above (more
-              # reliable than the check-run logs endpoint which frequently 404s).
+              # Gather per-check logs. The check-runs/{id}/logs endpoint
+              # 404s for GitHub Actions jobs, but actions/jobs/{id}/logs
+              # works (the check-run ID equals the Actions job ID). We try
+              # both and validate the download is a real zip so a 404 JSON
+              # body never pollutes the grep output below.
               TMP_LOGS_DIR=$(mktemp -d)
-              if gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/logs > "$TMP_LOGS_DIR/logs.zip" 2>/dev/null; then
-                (cd "$TMP_LOGS_DIR" && unzip -o -q logs.zip 2>/dev/null || true)
-              fi
-              # Also copy workflow-run logs as fallback / supplement.
+              _fetch_logs() {
+                local endpoint="$1" zippath="$2"
+                if gh api "$endpoint" > "$zippath" 2>/dev/null; then
+                  if unzip -t -q "$zippath" 2>/dev/null; then
+                    (cd "$TMP_LOGS_DIR" && unzip -o -q "$zippath" 2>/dev/null || true)
+                    return 0
+                  fi
+                fi
+                rm -f "$zippath"
+                return 1
+              }
+              # Primary: actions/jobs/{id}/logs (reliable for Actions jobs).
+              _fetch_logs "repos/$GITHUB_REPOSITORY/actions/jobs/$CHECK_ID/logs" "$TMP_LOGS_DIR/job-logs.zip" \
+                || _fetch_logs "repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/logs" "$TMP_LOGS_DIR/check-logs.zip" \
+                || echo "  (could not fetch per-check logs for $CHECK_NAME)"
+              # Supplement with all workflow-run logs (covers cases where the
+              # job endpoint is unavailable, e.g. non-Actions check runs).
               if [ -d "$WORKFLOW_LOGS_DIR" ] && find "$WORKFLOW_LOGS_DIR" -name '*.txt' -quit 2>/dev/null | grep -q .; then
                 cp -r "$WORKFLOW_LOGS_DIR"/*.txt "$TMP_LOGS_DIR/" 2>/dev/null || true
               fi
@@ -161,9 +189,13 @@ jobs:
               GRAPHQL_ERRORS=$(grep -rhi \
                 "Unknown field\|Unknown type\|Cannot query field\|Did you mean\|Field .* not defined\|Type .* not defined\|GraphQL errors detected\|schema.*error\|introspection" \
                 "$TMP_LOGS_DIR" 2>/dev/null | sed 's/^[0-9-]*T[0-9:.]*Z[[:space:]]*//' | sort -u || echo "")
+              # General errors: exclude GitHub API 404 JSON ("message": "Not Found")
+              # which is noise from failed log fetches, not an actual test error.
               GENERAL_ERRORS=$(grep -rhi -B1 -A5 \
-                "error\|fail\|panic\|not found\|FAIL:" \
-                "$TMP_LOGS_DIR" 2>/dev/null | sed 's/^[0-9-]*T[0-9:.]*Z[[:space:]]*//' | tail -120 || echo "")
+                "error\|fail\|panic\|FAIL:\|assertion\|expected\|but got\|validation FAILED\|No workflow calls" \
+                "$TMP_LOGS_DIR" 2>/dev/null \
+                | grep -vi '"message".*"Not Found"' \
+                | sed 's/^[0-9-]*T[0-9:.]*Z[[:space:]]*//' | tail -120 || echo "")
 
               if [ -n "$GRAPHQL_ERRORS" ]; then
                 CI_FAILURES+="\n### GraphQL / Schema Errors (root cause)\n\`\`\`\n$GRAPHQL_ERRORS\n\`\`\`\n"
@@ -188,13 +220,15 @@ jobs:
 
             # Download playwright test artifacts (error-context.md files contain
             # structured GraphQL errors and DOM state — the richest debug signal).
+            # Search across all failing workflow runs for the artifact.
             ARTIFACTS_DIR=$(mktemp -d)
-            if [ -n "$WORKFLOW_RUN_ID" ] && [ "$WORKFLOW_RUN_ID" != "null" ]; then
-              ARTIFACT_ID=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts \
+            for _RUN_ID in $WORKFLOW_RUN_IDS; do
+              [ -z "$_RUN_ID" ] && continue
+              ARTIFACT_ID=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$_RUN_ID/artifacts \
                 --jq '[.artifacts[] | select(.name == "playwright-results")] | first | .id' 2>/dev/null || echo "")
               if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
-                echo "Downloading playwright-results artifact $ARTIFACT_ID"
-                if gh api repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts/$ARTIFACT_ID/zip > "$ARTIFACTS_DIR/pw.zip" 2>/dev/null; then
+                echo "Downloading playwright-results artifact $ARTIFACT_ID from run $_RUN_ID"
+                if gh api repos/$GITHUB_REPOSITORY/actions/runs/$_RUN_ID/artifacts/$ARTIFACT_ID/zip > "$ARTIFACTS_DIR/pw.zip" 2>/dev/null; then
                   (cd "$ARTIFACTS_DIR" && unzip -o -q pw.zip 2>/dev/null || true)
                   ERROR_CONTEXT=$(find "$ARTIFACTS_DIR" -name 'error-context.md' -exec cat {} \; 2>/dev/null | head -200 || echo "")
                   if [ -n "$ERROR_CONTEXT" ]; then
@@ -202,12 +236,12 @@ jobs:
                   fi
                 fi
               fi
-            fi
+            done
             rm -rf "$ARTIFACTS_DIR"
 
             # Gather PR diff for context (L3 capability upgrade: context-blindness fix)
             PR_DIFF=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files \
-              --jq '.[] | "### \(.status): \(.path)\n\`\`\`diff\n\(.patch // "binary file")\n\`\`\`"' 2>/dev/null | head -200)
+              --jq '.[] | "### \(.status): \(.filename)\n\`\`\`diff\n\(.patch // "binary file")\n\`\`\`"' 2>/dev/null | head -200)
             if [ -n "$PR_DIFF" ]; then
               COMBINED+="\n\n## PR Changes (diff)\n$PR_DIFF"
             fi
@@ -238,10 +272,29 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           MAX_ITERATIONS: ${{ steps.context.outputs.max_iterations }}
           FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
         run: |
-          AUTO_FIX_COUNT=$(git log --oneline -15 | grep "auto-fix:" | wc -l | tr -d ' ')
+          # Count auto-fix commits. When L2 upgrades L1, the iteration
+          # counter should reset so L1 gets a fresh batch of attempts
+          # with the new capability. We count only auto-fix commits made
+          # AFTER the most recent "L2 Round" PR comment (if any).
+          L2_RESET_SHA=""
+          L2_COMMENT_DATE=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.body | test("L2 Round|已触发 L2|capability-resolver"))] | sort_by(.created_at) | last | .created_at' 2>/dev/null || echo "")
+          if [ -n "$L2_COMMENT_DATE" ] && [ "$L2_COMMENT_DATE" != "null" ]; then
+            # Find the first auto-fix commit at or after the L2 comment date.
+            L2_RESET_SHA=$(git log --reverse --since="$L2_COMMENT_DATE" --format='%H %s' \
+              | grep 'auto-fix:' | head -1 | awk '{print $1}' || echo "")
+          fi
+
+          if [ -n "$L2_RESET_SHA" ]; then
+            AUTO_FIX_COUNT=$(git log --oneline "${L2_RESET_SHA}^..HEAD" 2>/dev/null | grep "auto-fix:" | wc -l | tr -d ' ')
+            echo "Counting auto-fix commits since L2 reset ($L2_RESET_SHA)"
+          else
+            AUTO_FIX_COUNT=$(git log --oneline -15 | grep "auto-fix:" | wc -l | tr -d ' ')
+          fi
           echo "auto_fix_count=$AUTO_FIX_COUNT" >> $GITHUB_OUTPUT
           echo "Auto-fix commits on branch: $AUTO_FIX_COUNT (max: $MAX_ITERATIONS)"
 
@@ -251,7 +304,7 @@ jobs:
 
             # Count L2 rounds from PR comments
             L2_ROUNDS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq '[.[] | select(.body | test("L2 Round"))] | length' 2>/dev/null || echo "0")
+              --jq '[.[] | select(.body | test("L2 Round|已触发 L2|capability-resolver"))] | length' 2>/dev/null || echo "0")
             L2_ROUND=$((L2_ROUNDS + 1))
 
             # Check if last L2 commit should be reverted (if L2 changed L1 but still failing)

@@ -104,12 +104,14 @@ def validate_workflow_file() -> list[str]:
         errors.append("Missing .github/workflows/ directory")
         return errors
 
-    # Check if any workflow file references issue-resolver reusable workflows
-    resolver_ref = "issue-resolver-l1/.github/workflows"
+    # Check if any workflow file references issue-resolver reusable workflows.
+    # Accept both "issue-resolver" and "issue-resolver-l1" repo names since
+    # consumers may reference either (the repo was renamed/aliased).
+    resolver_refs = ("issue-resolver/.github/workflows", "issue-resolver-l1/.github/workflows")
     has_resolver = False
     for wf_file in workflow_dir.glob("*.yml"):
         content = wf_file.read_text()
-        if resolver_ref in content:
+        if any(ref in content for ref in resolver_refs):
             has_resolver = True
             break
 
