@@ -105,7 +105,7 @@ def validate_workflow_file() -> list[str]:
         return errors
 
     # Check if any workflow file references issue-resolver reusable workflows
-    resolver_ref = "issue-resolver/.github/workflows"
+    resolver_ref = "issue-resolver-l1/.github/workflows"
     has_resolver = False
     for wf_file in workflow_dir.glob("*.yml"):
         content = wf_file.read_text()
@@ -116,7 +116,7 @@ def validate_workflow_file() -> list[str]:
     if not has_resolver:
         errors.append(
             "No workflow calls issue-resolver reusable workflows. "
-            "Add a 'uses: link-seek/issue-resolver/.github/workflows/...' step "
+            "Add a 'uses: link-seek/issue-resolver-l1/.github/workflows/...' step "
             "to one of your workflow files."
         )
     return errors
