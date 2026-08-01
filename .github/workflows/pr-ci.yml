@@ -71,7 +71,7 @@ on:
       pipeline-contract-repo:
         description: 'Repo for pipeline contract validation (empty = skip)'
         required: false
-        default: 'link-seek/issue-resolver'
+        default: 'link-seek/issue-resolver-l1'
         type: string
 
 permissions:

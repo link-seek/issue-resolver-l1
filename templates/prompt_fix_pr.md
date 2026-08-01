@@ -115,6 +115,15 @@ curl -s http://localhost:8080/graphql -H 'Content-Type: application/json' \
   -d '{"query":"{ __type(name:\"Organizations\") { fields { name } } }"}' | python3 -m json.tool
 ```
 
+### "Authentication required for mutations" 错误
+当 CI 同时报 `Unknown field` 和 `Authentication required for mutations` 时：
+1. **通常 `Unknown field` 是根因** — 前端查询失败后，错误处理逻辑尝试用 mutation
+   记录错误，但 mutation 需要 auth → 产生二次错误。修好 schema 后此错误通常消失。
+2. 如果修好 schema 后仍报此错误，检查后端 GraphQL auth guard：
+   - 是否对 query 和 mutation 使用了不同的 auth 中间件
+   - 测试用户（如 CI 中的 seed user）是否有足够的权限
+   - auth guard 是否误拒了合法请求（如 token 解析逻辑有 bug）
+
 ## 集成测试本地复现
 当单元测试通过但 CI 集成/E2E 测试失败时，**必须在本地复现失败**才能有效修复。
 你有 terminal 和 docker 权限。步骤：
