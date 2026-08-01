@@ -1,0 +1,97 @@
+name: Deploy Broken Handler
+
+on:
+  workflow_call:
+    inputs:
+      classification-rules:
+        description: 'JSON array of {label, category, action, add-labels, comment} rules'
+        required: false
+        default: |
+          [
+            {"label":"error-smoke","category":"code","action":"auto-fix","add-labels":["fix-me"],"comment":"Classified as **code bug** (error-smoke) — auto-fix engaged."},
+            {"label":"error-deploy","category":"infrastructure","action":"human","add-labels":["needs-human"],"comment":"Classified as **infrastructure bug** (error-deploy) — needs human investigation."},
+            {"label":null,"category":"unknown","action":"human","add-labels":["needs-human","process-improvement"],"comment":"Could not classify this deploy-broken issue. Manual investigation needed.\n\n**L3 Process Improvement**: This issue has the `process-improvement` label. After resolving, please improve the process so this class of problem can be auto-classified next time."}
+          ]
+        type: string
+      trigger-label:
+        description: 'Label that triggers this handler'
+        required: false
+        default: 'deploy-broken'
+        type: string
+
+    secrets:
+      APP_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  classify-and-resolve:
+    if: github.event.label.name == inputs.trigger-label
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Classify deploy-broken issue
+        id: classify
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          RULES_JSON: ${{ inputs.classification-rules }}
+        run: |
+          LABELS=$(gh issue view $ISSUE_NUMBER -R "$REPO" --json labels --jq '.labels[].name')
+
+          echo "$RULES_JSON" | python3 -c "
+          import sys, json, os
+
+          labels = os.environ['LABELS'].split()
+          rules = json.load(sys.stdin)
+
+          category = 'unknown'
+          add_labels = []
+          comment = ''
+          action = 'human'
+
+          for rule in rules:
+              rule_label = rule.get('label')
+              if rule_label is None or rule_label in labels:
+                  category = rule['category']
+                  add_labels = rule.get('add-labels', [])
+                  comment = rule.get('comment', '')
+                  action = rule.get('action', 'human')
+                  break
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'category={category}\n')
+              f.write(f'action={action}\n')
+              f.write(f'add_labels={\",\".join(add_labels)}\n')
+
+          with open('/tmp/comment.txt', 'w') as f:
+              f.write(comment)
+
+          print(f'Classified: {category} (action: {action})')
+          "
+
+      - name: Apply classification
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          ADD_LABELS: ${{ steps.classify.outputs.add_labels }}
+        run: |
+          if [ -n "$ADD_LABELS" ]; then
+            gh issue edit $ISSUE_NUMBER -R "$REPO" --add-label "$ADD_LABELS"
+          fi
+          gh issue comment $ISSUE_NUMBER -R "$REPO" --body-file /tmp/comment.txt

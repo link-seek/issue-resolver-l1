@@ -1,0 +1,587 @@
+#!/usr/bin/env python3
+"""
+Issue Resolver — OpenHands SDK + LocalWorkspace.
+
+Agent runs directly on the runner filesystem (no sandbox).
+Agent can multi-turn iterate: explore → edit → test → fix errors.
+Script handles all git operations after agent finishes.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+from templates import get_template
+
+
+# ── Token refresh: GitHub App installation tokens expire after 1 hour ──
+# For long-running workflows (6h+), we refresh the token on demand.
+_token_cache: dict = {"token": None, "expires_at": 0}
+
+
+def _create_jwt(app_id: str, private_key: str) -> str:
+    """Create a GitHub App JWT (valid 10 min) from the app credentials."""
+    import base64
+    now = int(time.time())
+    payload = {"iat": now - 60, "exp": now + 600, "iss": app_id}
+    header = {"alg": "RS256", "typ": "JWT"}
+
+    def b64(d: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(d, separators=(",", ":")).encode()).rstrip(b"=").decode()
+
+    # Parse PEM private key
+    from cryptography.hazmat.primitives import serialization, hashes
+    from cryptography.hazmat.primitives.asymmetric import padding
+    key = serialization.load_pem_private_key(private_key.encode(), password=None)
+
+    signing_input = f"{b64(header)}.{b64(payload)}".encode()
+    signature = key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    return f"{signing_input.decode()}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+
+def _get_installation_id(jwt: str, owner: str) -> int:
+    """Get the installation ID for the app in the given owner/org."""
+    # List all installations and find the one matching the owner
+    req = urllib.request.Request(
+        "https://api.github.com/app/installations",
+        headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.load(resp)
+    for inst in data:
+        acct = inst.get("account", {})
+        if acct.get("login", "").lower() == owner.lower():
+            return inst["id"]
+    raise RuntimeError(f"No installation found for app in {owner}. Installations: {[(i.get('account',{}).get('login'), i.get('id')) for i in data]}")
+
+
+def create_installation_token() -> str:
+    """Create a fresh GitHub App installation token (valid 1 hour)."""
+    app_id = os.getenv("APP_ID")
+    private_key = os.getenv("APP_PRIVATE_KEY")
+    owner = os.getenv("GITHUB_REPOSITORY_OWNER") or os.getenv("REPO_NAME", "").split("/")[0]
+
+    if not app_id or not private_key:
+        # Fallback: use the static GITHUB_TOKEN (may be expired)
+        return os.getenv("GITHUB_TOKEN", "")
+
+    jwt = _create_jwt(app_id, private_key)
+    inst_id = _get_installation_id(jwt, owner)
+
+    req = urllib.request.Request(
+        f"https://api.github.com/app/installations/{inst_id}/access_tokens",
+        method="POST",
+        headers={"Authorization": f"Bearer {jwt}", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.load(resp)
+
+    _token_cache["token"] = data["token"]
+    _token_cache["expires_at"] = time.time() + 3300  # 55 min (token lasts 1h, refresh early)
+    print("[token] Refreshed installation token (expires in ~55 min)")
+    return data["token"]
+
+
+def get_valid_token() -> str:
+    """Return a valid token, refreshing if expired or about to expire."""
+    if _token_cache["token"] and time.time() < _token_cache["expires_at"]:
+        return _token_cache["token"]
+    return create_installation_token()
+
+
+DEFAULT_CONFIG = {
+    "trigger": {"label": "fix-me", "mention": "@oh"},
+    "risk_detection": {
+        "file_patterns": [
+            r"migration", r"\.sql$", r"/schema", r"/database",
+            r"\.prisma$", r"alembic", r"diesel", r"/entit",
+        ]
+    },
+    "test": {"command": None},
+}
+
+
+def load_config() -> dict:
+    config_path = Path(".issue-resolver.yml")
+    if not config_path.exists():
+        print("No .issue-resolver.yml found, using defaults")
+        return DEFAULT_CONFIG
+    import yaml
+    with open(config_path) as f:
+        user_config = yaml.safe_load(f) or {}
+    merged = json.loads(json.dumps(DEFAULT_CONFIG))
+    for key in ("trigger", "risk_detection", "test", "pipeline_test", "deploy"):
+        if key in user_config:
+            merged[key] = user_config[key]
+    print(f"Loaded config from {config_path}")
+    return merged
+
+
+def get_env(name: str, default: str | None = None) -> str:
+    v = os.getenv(name, default)
+    if v is None:
+        raise ValueError(f"{name} environment variable is required")
+    return v
+
+
+def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict:
+    url = f"https://api.github.com/repos/{path}"
+    data = json.dumps(body).encode() if body else None
+
+    def _do_request(tok: str) -> dict:
+        req = urllib.request.Request(url, data=data, headers={
+            "Authorization": f"token {tok}",
+            "Accept": "application/vnd.github+json",
+        }, method=method)
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.load(resp)
+
+    try:
+        return _do_request(token)
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            # Token expired — refresh and retry once
+            print("[token] Got 401, refreshing token...")
+            new_token = create_installation_token()
+            return _do_request(new_token)
+        raise
+
+
+def analyze_db_risk(db_files: list[str]) -> str:
+    import re
+
+    risk_patterns = [
+        (re.compile(r'DROP\s+TABLE', re.I), '🔴 Critical', 'DROP TABLE — permanent data loss'),
+        (re.compile(r'DROP\s+COLUMN', re.I), '🔴 Critical', 'DROP COLUMN — permanent data loss'),
+        (re.compile(r'TRUNCATE', re.I), '🔴 Critical', 'TRUNCATE — permanent data loss'),
+        (re.compile(r'ALTER\s+COLUMN.*TYPE', re.I), '🟠 High', 'ALTER COLUMN TYPE — table rewrite'),
+        (re.compile(r'SET\s+NOT\s+NULL', re.I), '🟠 High', 'SET NOT NULL — exclusive lock + full scan'),
+        (re.compile(r'RENAME\s+COLUMN', re.I), '🟠 High', 'RENAME COLUMN — breaks running app'),
+        (re.compile(r'RENAME\s+TABLE', re.I), '🟠 High', 'RENAME TABLE — breaks running app'),
+        (re.compile(r'CREATE\s+INDEX(?!.*CONCURRENTLY)', re.I), '🟠 High', 'CREATE INDEX without CONCURRENTLY — blocks writes'),
+        (re.compile(r'ADD\s+FOREIGN\s+KEY', re.I), '🟡 Medium', 'ADD FOREIGN KEY — validates all rows under lock'),
+        (re.compile(r'ADD\s+UNIQUE', re.I), '🟡 Medium', 'ADD UNIQUE constraint — validates all rows under lock'),
+        (re.compile(r'DROP\s+INDEX', re.I), '🟡 Medium', 'DROP INDEX — query plan regression'),
+        (re.compile(r'ADD\s+COLUMN', re.I), '🟢 Safe', 'ADD COLUMN — check if nullable'),
+    ]
+
+    findings = []
+    for filepath in db_files:
+        try:
+            with open(filepath, 'r') as f:
+                content = f.read()
+        except FileNotFoundError:
+            findings.append((filepath, '⚠️', 'File not found (may be in migration crate)'))
+            continue
+
+        for pattern, level, desc in risk_patterns:
+            matches = pattern.findall(content)
+            if matches:
+                findings.append((filepath, level, desc))
+
+    if not findings:
+        findings.append(('-', '🟢 Safe', 'No dangerous patterns detected'))
+
+    counts = {'🔴 Critical': 0, '🟠 High': 0, '🟡 Medium': 0, '🟢 Safe': 0}
+    for _, level, _ in findings:
+        if level in counts:
+            counts[level] += 1
+
+    lines = ["⚠️ 检测到数据库变更 — 需要人工审查", ""]
+    lines.append("## 变更文件")
+    for f in db_files:
+        ftype = "迁移" if "migration" in f.lower() else "实体" if "entity" in f.lower() else "schema"
+        lines.append(f"- `{f}` ({ftype})")
+    lines.append("")
+    lines.append("## 风险分析")
+    lines.append("| 风险 | 文件 | 说明 |")
+    lines.append("|------|------|------|")
+    for filepath, level, desc in findings:
+        short = filepath.split('/')[-1]
+        lines.append(f"| {level} | {short} | {desc} |")
+    lines.append("")
+    lines.append(f"**汇总**: {counts['🔴 Critical']} 严重, {counts['🟠 High']} 高, {counts['🟡 Medium']} 中, {counts['🟢 Safe']} 安全")
+
+    return "\n".join(lines)
+
+
+def run_tests(config: dict) -> bool:
+    test_cmd = config.get("test", {}).get("command")
+    if test_cmd:
+        r = subprocess.run(test_cmd, shell=True, capture_output=True, text=True, timeout=600)
+        print(f"test command '{test_cmd}' exit: {r.returncode}")
+        if r.returncode != 0:
+            print(f"stderr: {r.stderr[:500]}")
+        return r.returncode == 0
+    if Path("Cargo.toml").exists():
+        r = subprocess.run(["cargo", "test", "--", "--nocapture"],
+                         capture_output=True, text=True, timeout=600)
+        print(f"cargo test exit: {r.returncode}")
+        if r.returncode != 0:
+            print(f"stderr: {r.stderr[:500]}")
+        return r.returncode == 0
+    if Path("package.json").exists():
+        r = subprocess.run(["npm", "test", "--", "--passWithNoTests"],
+                         capture_output=True, text=True, timeout=120)
+        return r.returncode == 0
+    return True
+
+
+def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
+                   max_wait: int = 1800, interval: int = 30):
+    """Poll CI checks + AI review, merge when all green.
+
+    Replaces gh pr merge --auto with explicit polling so we can
+    feed failures back to the LLM for iterative fixes.
+    """
+    print(f"Polling CI + review for PR #{pr_num} (max {max_wait}s)...")
+
+    pr_head_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+
+    start = time.time()
+    while time.time() - start < max_wait:
+        github_token = get_valid_token()
+
+        checks = gh_api("GET", f"{repo_name}/commits/{pr_head_sha}/check-runs",
+                        github_token, body=None)
+        check_runs = checks.get("check_runs", []) if checks else []
+
+        failed = [c for c in check_runs if c.get("conclusion") == "failure"]
+        pending = [c for c in check_runs if c.get("status") != "completed"]
+
+        if failed:
+            failed_names = [c["name"] for c in failed]
+            print(f"CI failed: {failed_names}")
+            gh_api("POST", f"{repo_name}/issues/{pr_num}/comments", github_token, {
+                "body": f"CI checks failed: {', '.join(failed_names)}. Auto-fix will retry."
+            })
+            return
+
+        if pending:
+            elapsed = int(time.time() - start)
+            remaining = max_wait - elapsed
+            print(f"Waiting: {len(pending)} checks pending ({remaining}s remaining)")
+            time.sleep(interval)
+            continue
+
+        reviews = gh_api("GET", f"{repo_name}/pulls/{pr_num}/reviews", github_token)
+        bot_reviews = [r for r in reviews if r.get("user", {}).get("login") == "github-actions[bot]"]
+        latest_review = bot_reviews[-1] if bot_reviews else None
+
+        if latest_review and latest_review.get("state") == "APPROVED":
+            print("All CI passed + AI approved. Merging...")
+            github_token = get_valid_token()
+            result = subprocess.run(
+                ["gh", "pr", "merge", str(pr_num), "--squash", "--repo", repo_name],
+                capture_output=True, text=True,
+                env={**os.environ, "GH_TOKEN": github_token}
+            )
+            if result.returncode == 0:
+                print(f"PR #{pr_num} merged successfully!")
+                gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token, {
+                    "body": f"PR #{pr_num} merged after CI + AI review passed."
+                })
+            else:
+                print(f"Merge failed: {result.stderr}")
+            return
+
+        if latest_review and latest_review.get("state") == "CHANGES_REQUESTED":
+            print("AI review: CHANGES_REQUESTED. Auto-fix will handle.")
+            return
+
+        print("Waiting for AI review verdict...")
+        time.sleep(interval)
+
+    print(f"Timeout after {max_wait}s waiting for CI + review.")
+    gh_api("POST", f"{repo_name}/issues/{pr_num}/comments", get_valid_token(), {
+        "body": f"Timed out waiting for CI + AI review. Please check PR #{pr_num} manually."
+    })
+
+
+def main():
+    print("=" * 60)
+    print("Issue Resolver (OpenHands SDK + LocalWorkspace)")
+    print("=" * 60)
+
+    api_key = get_env("LLM_API_KEY")
+    model = get_env("LLM_MODEL", "openai/glm-5.2")
+    base_url = get_env("LLM_BASE_URL", "https://api.modelarts-maas.com/v2")
+    github_token = get_env("GITHUB_TOKEN")
+    issue_number = int(get_env("ISSUE_NUMBER"))
+    issue_type = get_env("ISSUE_TYPE", "issue")
+    repo_name = get_env("REPO_NAME")
+
+    print(f"Repo: {repo_name}, Issue: #{issue_number}, Model: {model}")
+    print(f"CWD: {os.getcwd()}")
+
+    config = load_config()
+
+    # Fetch issue
+    issue = gh_api("GET", f"{repo_name}/issues/{issue_number}", github_token)
+    title = issue["title"]
+    body = issue.get("body", "") or "（无描述）"
+    print(f"Title: {title}")
+
+    # Fetch comments
+    comments = gh_api("GET", f"{repo_name}/issues/{issue_number}/comments", github_token)
+    comments_text = ""
+    if comments:
+        comments_text = "\n\n## 评论补充上下文:\n"
+        for c in comments:
+            comments_text += f"\n**{c['user']['login']}**:\n{c['body']}\n"
+
+    # Comment: started
+    gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+           {"body": get_template("issue_started")})
+
+    # Record state before agent
+    commit_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    print(f"Commit before: {commit_before[:12]}")
+    print(f"Git status before: {subprocess.run(['git', 'status', '--porcelain'], capture_output=True, text=True).stdout}")
+
+    # Check if user confirmed the plan in comments
+    user_confirmed = any(
+        any(kw in c["body"].strip().lower() for kw in ("confirm", "确认", "approved", "continue-fix"))
+        for c in comments
+    )
+    bot_posted_plan = any("实施方案" in c.get("body", "") for c in comments)
+
+    if not bot_posted_plan:
+        # Phase 1: Agent assesses confidence and either plans or implements directly
+        task_prompt = get_template(
+            "prompt_fix_issue",
+            repo_name=repo_name, title=title, body=body, comments_text=comments_text,
+        )
+    elif not user_confirmed:
+        print("Plan posted, waiting for user confirmation")
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+               {"body": get_template("waiting_confirm")})
+        sys.exit(0)
+    else:
+        # Phase 2: User confirmed, implement
+        task_prompt = get_template(
+            "prompt_fix_confirm",
+            repo_name=repo_name, title=title, body=body, comments_text=comments_text,
+        )
+
+    # Create agent
+    from openhands.sdk import LLM, Agent, Conversation, get_logger
+    from openhands.sdk.workspace import LocalWorkspace
+    from openhands.tools.preset.default import get_default_condenser, get_default_tools
+
+    logger = get_logger(__name__)
+    logger.info("Creating OpenHands agent with LocalWorkspace...")
+
+    llm_config = {
+        "model": model,
+        "api_key": api_key,
+        "usage_id": "issue_resolver",
+        "drop_params": True,
+    }
+    if base_url:
+        llm_config["base_url"] = base_url
+
+    llm = LLM(**llm_config)
+
+    agent = Agent(
+        llm=llm,
+        tools=get_default_tools(enable_browser=False),
+        system_prompt_kwargs={"cli_mode": True},
+        condenser=get_default_condenser(
+            llm=llm.model_copy(update={"usage_id": "condenser"})
+        ),
+    )
+
+    cwd = os.getcwd()
+    workspace = LocalWorkspace(working_dir=cwd)
+    print(f"LocalWorkspace working_dir: {workspace.working_dir}")
+
+    secrets = {
+        "LLM_API_KEY": api_key,
+        "GITHUB_TOKEN": github_token,
+    }
+
+    logger.info("Starting agent conversation...")
+    conversation = Conversation(
+        agent=agent,
+        workspace=workspace,
+        secrets=secrets,
+    )
+
+    try:
+        conversation.send_message(task_prompt)
+        conversation.run()
+        logger.info("Agent completed successfully")
+    except Exception as e:
+        logger.error(f"Agent failed: {type(e).__name__}: {e}")
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+               {"body": get_template("agent_error", error=e)})
+        sys.exit(1)
+
+    # If this was the planning phase, check if agent wrote code or just planned
+    if not bot_posted_plan:
+        # Check if agent made any code changes
+        status_after_plan = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True
+        ).stdout.strip()
+        
+        if not status_after_plan:
+            # No code changes = agent posted a plan, waiting for confirmation
+            from openhands.sdk.conversation.response_utils import get_agent_final_response
+            try:
+                plan_response = get_agent_final_response(conversation)
+            except Exception:
+                plan_response = "Plan generated. Please review the workflow logs."
+            
+            gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+                   {"body": get_template("plan_posted", plan_response=plan_response)})
+            print("Plan posted to issue, waiting for confirmation")
+            sys.exit(0)
+        else:
+            print("Agent was confident, implemented directly (no plan needed)")
+
+    # Check state after agent
+    commit_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    status_after = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True
+    ).stdout.strip()
+
+    print(f"Commit after: {commit_after[:12]}")
+    print(f"Git status after:\n{status_after}")
+    print(f"HEAD changed: {commit_before != commit_after}")
+    print(f"Has uncommitted: {bool(status_after)}")
+
+    has_uncommitted = bool(status_after)
+    has_new_commits = commit_before != commit_after
+
+    if not has_new_commits and not has_uncommitted:
+        print("No changes detected")
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+               {"body": get_template("issue_no_changes")})
+        sys.exit(0)
+
+    # Create branch
+    branch = f"agent/fix-{issue_type}-{issue_number}"
+    subprocess.run(["git", "checkout", "-b", branch], check=True)
+
+    # Commit any uncommitted changes (agent should have left files changed, not committed)
+    if has_uncommitted:
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-m",
+                       get_template("commit_msg", issue_number=issue_number, title=title)],
+                       check=True)
+
+    # If agent committed to main (shouldn't happen but just in case), the branch
+    # already has those commits. We need to reset main — but branch is already
+    # checked out so we're fine.
+
+    # Rebase on latest main to avoid conflicts
+    print("Rebasing on latest main...")
+    subprocess.run(["git", "fetch", "origin", "main"], check=True)
+    rebase = subprocess.run(
+        ["git", "rebase", "origin/main"],
+        capture_output=True, text=True
+    )
+    if rebase.returncode != 0:
+        print(f"Rebase failed: {rebase.stderr[:200]}")
+        subprocess.run(["git", "rebase", "--abort"], check=True)
+        merge = subprocess.run(
+            ["git", "merge", "origin/main", "--no-edit"],
+            capture_output=True, text=True
+        )
+        if merge.returncode != 0:
+            print(f"Merge also failed: {merge.stderr[:200]}")
+            subprocess.run(["git", "merge", "--abort"], check=True)
+            gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+                   {"body": get_template("rebase_conflict")})
+            sys.exit(1)
+        print("Merged origin/main into branch (rebase failed, merge succeeded)")
+    else:
+        print("Rebase succeeded")
+
+    # Push — refresh token first (may have been hours since start)
+    github_token = get_valid_token()
+    push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
+    subprocess.run(["git", "push", push_url, branch], check=True)
+
+    # Run tests
+    print("Running tests...")
+    tests_ok = run_tests(config)
+
+    # Create PR — refresh token again (tests may have taken a while)
+    github_token = get_valid_token()
+    pr = gh_api("POST", f"{repo_name}/pulls", github_token, {
+        "title": f"Fix #{issue_number}: {title}",
+        "body": get_template("pr_body", issue_number=issue_number),
+        "head": branch,
+        "base": "main",
+    })
+    pr_url = pr["html_url"]
+    pr_num = pr["number"]
+    print(f"PR created: {pr_url}")
+
+    # Check for database changes and decide auto-merge
+    risk_patterns = config.get("risk_detection", {}).get("file_patterns", [])
+    if risk_patterns:
+        db_pattern = re.compile(
+            '|'.join(f'({p})' for p in risk_patterns),
+            re.IGNORECASE
+        )
+    else:
+        db_pattern = re.compile(
+            r'(migration|\.sql$|/schema[/.]|/database[/.]|\.prisma$|alembic|diesel|/entit)',
+            re.IGNORECASE
+        )
+
+    pr_files = []
+    page = 1
+    while True:
+        batch = gh_api("GET", f"{repo_name}/pulls/{pr_num}/files?page={page}&per_page=100", github_token)
+        if not batch:
+            break
+        pr_files.extend(batch)
+        if len(batch) < 100:
+            break
+        page += 1
+
+    changed_filenames = [f["filename"] for f in pr_files]
+    db_files = [f for f in changed_filenames if db_pattern.search(f)]
+
+    if db_files:
+        print(f"DB changes detected: {db_files}")
+        risk_report = analyze_db_risk(db_files)
+
+        gh_api("POST", f"{repo_name}/issues/{pr_num}/comments", github_token, {
+            "body": risk_report
+        })
+
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token, {
+            "body": get_template("db_risk_warning", pr_num=pr_num, pr_url=pr_url)
+        })
+        print(f"DB changes detected, auto-merge NOT enabled for PR #{pr_num}")
+    else:
+        poll_and_merge(repo_name, pr_num, issue_number, pr_url)
+
+    # Comment on issue
+    emoji = "✅" if tests_ok else "⚠️"
+    gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+           {"body": get_template("pr_created", emoji=emoji, pr_num=pr_num, pr_url=pr_url, test_status="通过" if tests_ok else "失败")})
+
+    print(f"\n✅ Done! PR: {pr_url}")
+
+
+if __name__ == "__main__":
+    main()

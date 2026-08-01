@@ -1,0 +1,89 @@
+---
+name: AI Issue Resolver
+description: Automatically resolve GitHub issues by creating PRs with fixes using GLM-5.2
+author: link-seek
+
+branding:
+    icon: wrench
+    color: blue
+
+inputs:
+    llm-model:
+        description: LLM model to use
+        required: false
+        default: openai/glm-5.2
+    llm-base-url:
+        description: LLM base URL
+        required: false
+        default: 'https://api.modelarts-maas.com/v2'
+    llm-api-key:
+        description: LLM API key
+        required: true
+    github-token:
+        description: GitHub token
+        required: true
+    issue-number:
+        description: Issue number to resolve
+        required: true
+    issue-type:
+        description: 'issue or pr'
+        required: false
+        default: 'issue'
+
+runs:
+    using: composite
+    steps:
+        - name: Checkout target repository
+          uses: actions/checkout@v4
+          with:
+              fetch-depth: 0
+              persist-credentials: true
+              path: target-repo
+
+        - name: Checkout issue-resolver plugin
+          uses: actions/checkout@v4
+          with:
+              repository: link-seek/issue-resolver-l1
+              ref: main
+              path: issue-resolver-plugin
+              token: ${{ inputs.github-token }}
+
+        - name: Set up Python
+          uses: actions/setup-python@v5
+          with:
+              python-version: '3.12'
+
+        - name: Install uv
+          uses: astral-sh/setup-uv@v6
+          with:
+              enable-cache: true
+
+        - name: Configure Git
+          shell: bash
+          run: |
+              git config --global user.name "ai-bot"
+              git config --global user.email "bot@ai-resolver.dev"
+
+        - name: Run Issue Resolver
+          shell: bash
+          working-directory: target-repo
+          env:
+              LLM_MODEL: ${{ inputs.llm-model }}
+              LLM_BASE_URL: ${{ inputs.llm-base-url }}
+              LLM_API_KEY: ${{ inputs.llm-api-key }}
+              GITHUB_TOKEN: ${{ inputs.github-token }}
+              ISSUE_NUMBER: ${{ inputs.issue-number }}
+              ISSUE_TYPE: ${{ inputs.issue-type }}
+              REPO_NAME: ${{ github.repository }}
+          run: |
+              uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
+                python ../issue-resolver-plugin/scripts/fix_issue.py
+
+        - name: Upload logs
+          uses: actions/upload-artifact@v4
+          if: always()
+          with:
+              name: issue-resolver-logs
+              path: target-repo/*.log
+              retention-days: 7
+              if-no-files-found: ignore
