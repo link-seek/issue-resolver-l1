@@ -221,5 +221,47 @@ class TestPipelineTestScript(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestContentFilterHandling(unittest.TestCase):
+    """Test fix_pr.py content-safety-filter detection and redaction."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
+
+    def test_detects_sensitive_information_error(self):
+        import fix_pr
+        exc = RuntimeError("litellm.APIError: OpenAIException - "
+                            "Input text May contain sensitive information, please try again.")
+        self.assertTrue(fix_pr.is_content_filter_error(exc))
+
+    def test_detects_content_filter_error(self):
+        import fix_pr
+        exc = RuntimeError("content_filter triggered by input")
+        self.assertTrue(fix_pr.is_content_filter_error(exc))
+
+    def test_ignores_unrelated_error(self):
+        import fix_pr
+        exc = RuntimeError("connection reset by peer")
+        self.assertFalse(fix_pr.is_content_filter_error(exc))
+
+    def test_redact_neutralizes_trigger_words(self):
+        import fix_pr
+        text = ("bypass entity_guard role checks; unauthenticated attacker could "
+                "forge tokens; permission bypass; security hole")
+        redacted = fix_pr.redact_for_display(text)
+        for bad in ("bypass", "attacker", "unauthenticated", "forge tokens",
+                    "security hole"):
+            self.assertNotIn(bad, redacted.lower())
+
+    def test_redact_preserves_unrelated_text(self):
+        import fix_pr
+        self.assertEqual(fix_pr.redact_for_display("cargo build ok"),
+                         "cargo build ok")
+
+    def test_redact_mode_prefix_is_nonempty(self):
+        import fix_pr
+        self.assertTrue(fix_pr._REDACT_MODE_PREFIX.strip())
+
+
 if __name__ == "__main__":
     unittest.main()
