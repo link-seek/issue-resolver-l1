@@ -249,21 +249,45 @@ jobs:
             echo "exceeded=true" >> $GITHUB_OUTPUT
             echo "::error::Max auto-fix iterations ($MAX_ITERATIONS) reached (current: $AUTO_FIX_COUNT)"
 
+            # Count L2 rounds from PR comments
+            L2_ROUNDS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+              --jq '[.[] | select(.body | test("L2 Round"))] | length' 2>/dev/null || echo "0")
+            L2_ROUND=$((L2_ROUNDS + 1))
+
+            # Check if last L2 commit should be reverted (if L2 changed L1 but still failing)
+            REVERT_LAST="false"
+            LAST_L2_COMMIT=$(gh api "repos/link-seek/issue-resolver-l1/commits?per_page=5" \
+              --jq '[.[] | select(.commit.message | startswith("L2: upgrade"))] | length' 2>/dev/null || echo "0")
+            if [ "$LAST_L2_COMMIT" -gt "0" ] && [ "$L2_ROUND" -gt "1" ]; then
+              REVERT_LAST="true"
+            fi
+
+            # L2 round limit: max 3 rounds
+            if [ "$L2_ROUND" -gt "3" ]; then
+              BODY="🧑 **Human intervention needed**: L2 has run 3 rounds without convergence.
+            - PR #${PR_NUMBER} still failing after 3 L2 upgrade cycles
+            - Auto-fix commits: ${AUTO_FIX_COUNT}
+            - Please review manually."
+              gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments -f body="$BODY" 2>/dev/null || true
+              echo "::error::L2 round limit (3) exceeded. Human intervention needed."
+              exit 1
+            fi
+
             # Dispatch L2 (capability-resolver) to upgrade L1's capability
-            # L2 will classify the failure, upgrade L1, and retry
-            # Use gh api with --raw-field to avoid bash interpreting backticks in FIX_CONTEXT
-            echo "Dispatching L2 (capability-resolver)..."
+            echo "Dispatching L2 (capability-resolver) round ${L2_ROUND}/3..."
             gh api repos/link-seek/issue-resolver-l2/actions/workflows/capability-resolver.yml/dispatches \
               -X POST \
               -f ref=main \
               -f "inputs[consumer-repo]=$GITHUB_REPOSITORY" \
               -f "inputs[pr-number]=$PR_NUMBER" \
               -f "inputs[head-sha]=$HEAD_SHA" \
+              -f "inputs[l2-round]=$L2_ROUND" \
+              -f "inputs[revert-last]=$REVERT_LAST" \
               --raw-field "inputs[ci-failures]=$FIX_CONTEXT" \
               --header "Authorization: token $PAT_TOKEN" \
-              || echo "Failed to dispatch L2 (capability-resolver may not exist yet)"
+              || echo "Failed to dispatch L2"
 
-            BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 (capability-resolver) 分析能力缺口并升级 L1。"
+            BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 Round ${L2_ROUND}/3 (revert-last=${REVERT_LAST})。"
             gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
               -f body="$BODY"
             exit 1
@@ -275,7 +299,7 @@ jobs:
         if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
         uses: actions/checkout@v4
         with:
-          repository: link-seek/issue-resolver
+          repository: link-seek/issue-resolver-l1
           ref: main
           path: issue-resolver-scripts
           token: ${{ steps.app-token.outputs.token }}
