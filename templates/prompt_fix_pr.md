@@ -16,13 +16,15 @@
    - 如果存在 Cargo.toml: `cargo test -- --nocapture`
    - 如果存在 package.json: `npm test -- --passWithNoTests`
 5. 如果测试失败，修复并迭代
-6. 自我审查: 运行 `git diff` 检查改动。检查:
+6. **如果单元测试通过但 CI 集成测试失败**（审查反馈中有 CI Test Failures / GraphQL 错误），
+   你必须在本地复现集成测试失败（见下方「集成测试本地复现」），否则你是在盲修。
+7. 自我审查: 运行 `git diff` 检查改动。检查:
    - 错误处理和边界情况
    - 安全问题
    - 未使用的导入或变量
    - 缺失的分页或边界检查
-7. 修复自我审查中发现的问题
-8. 重新运行测试确认一切通过
+8. 修复自我审查中发现的问题
+9. 重新运行测试确认一切通过
 
 ## 架构约定（L1 限制）
 你是 L1（auto-fix），你的职责是修消费仓的应用代码。
@@ -69,6 +71,79 @@ SeaORM 在 SQLite 中将 `Uuid` 类型存为 **16 字节 binary blob**（`X'...'
 - **修后端 resolver/mutation** — 让它正确返回数据或处理错误
 - 如果 review-ai 同时报了 blocking issue（如事务违反 Result 契约），
   那个就是根因，修它就能同时解决 E2E 失败
+
+## GraphQL Schema 构建错误（"Unknown field" / "Unknown type"）
+当 CI 报以下错误时，根因是 **GraphQL schema 构建时字段/类型未注册**，不是 resolver 逻辑问题：
+
+```
+Unknown field "valueStreamsBySpace" on type "Query". Did you mean "valueStreams"?
+Unknown field "spaceById" on type "Query".
+Unknown field "visibility" on type "Organizations".
+```
+
+### 诊断步骤
+1. 找到 `build_graphql_schema` 函数（通常在 `graphql.rs` 或类似文件）
+2. **`Unknown field "X" on type "Query"`** → X 是自定义 query，检查：
+   - 是否调用了注册自定义 query 的函数（如 `register_space_scoped_queries`）
+   - 该函数是否把 field push 到了 `builder.queries`
+   - field 的返回类型（TypeRef）是否拼写正确
+3. **`Unknown field "X" on type "Organizations"`**（实体类型缺字段）→ 检查：
+   - SeaORM Entity Model 是否有该字段（如 `visibility: SpaceVisibility`）
+   - 该字段的类型（如 `SpaceVisibility` enum）是否通过
+     `builder.register_enumeration::<SpaceVisibility>()` 注册
+   - seaography 自动注册实体字段时，如果字段类型（enum）未注册，
+     该字段会被 **静默跳过** — 这是最常见的坑
+4. **`Unknown type "X"`** → enum/struct 类型未注册，用
+   `builder.register_enumeration::<X>()` 或 `builder.register_output_type::<X>()`
+
+### 常见修复模式
+```rust
+// 在 build_graphql_schema 中，schema_builder().finish() 之前：
+// 1. 注册所有被实体字段引用的 enum
+builder.register_enumeration::<SpaceVisibility>();
+builder.register_enumeration::<SpaceRole>();
+// 2. 确保自定义 query 注册函数被调用
+register_space_scoped_queries(&mut builder, ...);
+```
+
+### 验证修复
+修完后，用 GraphQL introspection 确认字段存在：
+```bash
+curl -s http://localhost:8080/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ __type(name:\"Query\") { fields { name } } }"}' | python3 -m json.tool
+curl -s http://localhost:8080/graphql -H 'Content-Type: application/json' \
+  -d '{"query":"{ __type(name:\"Organizations\") { fields { name } } }"}' | python3 -m json.tool
+```
+
+## 集成测试本地复现
+当单元测试通过但 CI 集成/E2E 测试失败时，**必须在本地复现失败**才能有效修复。
+你有 terminal 和 docker 权限。步骤：
+
+1. **启动后端**（在仓库根目录）：
+   ```bash
+   docker compose -f docker-compose.ci.yml up -d --build
+   # 等待后端健康
+   for i in $(seq 1 60); do curl -sf http://localhost:8080/health && break; sleep 2; done
+   ```
+2. **安装 Playwright**（在 frontend 目录）：
+   ```bash
+   cd frontend && npm install && npx playwright install-deps chromium && npx playwright install chromium
+   ```
+3. **运行 E2E 测试**（用 CI 相同的 filter）：
+   ```bash
+   npx playwright test --grep @smoke --reporter=line
+   ```
+4. **查看错误**：测试输出会显示 `GraphQL errors detected during test` 和具体的
+   `Unknown field` 错误。`test-results/` 下有 `error-context.md` 和截图。
+5. **迭代修复**：修后端代码 → 重新 build 后端 → 重跑 E2E：
+   ```bash
+   docker compose -f docker-compose.ci.yml up -d --build
+   npx playwright test --grep @smoke --reporter=line
+   ```
+6. **完成后清理**：`docker compose -f docker-compose.ci.yml down`
+
+> 注意：Rust 首次 build 可能需要 4-5 分钟。后续增量 build 会快很多。
+> 如果 docker 不可用，至少用 GraphQL introspection（见上方）检查 schema。
 
 ## Rust 事务安全规则
 当 `save()` 后跟 `audit_log()` 时，如果 audit_log 失败：

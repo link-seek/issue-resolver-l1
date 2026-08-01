@@ -120,6 +120,19 @@ jobs:
             CI_FAILURES=""
             FAILED_CHECKS=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
               --jq '.check_runs[] | select(.conclusion == "failure") | "\(.id)\t\(.name)"' 2>/dev/null)
+
+            # Download workflow run logs once (check-run logs API often 404s for
+            # GitHub Actions jobs, but workflow-run logs are reliable).
+            WORKFLOW_LOGS_DIR=$(mktemp -d)
+            WORKFLOW_RUN_ID=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$HEAD_SHA&per_page=10" \
+              --jq '[.workflow_runs[] | select(.conclusion == "failure")] | sort_by(.created_at) | last | .id' 2>/dev/null || echo "")
+            if [ -n "$WORKFLOW_RUN_ID" ] && [ "$WORKFLOW_RUN_ID" != "null" ]; then
+              echo "Fetching workflow run logs for run $WORKFLOW_RUN_ID"
+              if gh api repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/logs > "$WORKFLOW_LOGS_DIR/run-logs.zip" 2>/dev/null; then
+                (cd "$WORKFLOW_LOGS_DIR" && unzip -o -q run-logs.zip 2>/dev/null || true)
+              fi
+            fi
+
             while IFS=$'\t' read -r CHECK_ID CHECK_NAME; do
               [ -z "$CHECK_ID" ] && continue
               echo "CI check failed: $CHECK_NAME (ID: $CHECK_ID)"
@@ -128,18 +141,42 @@ jobs:
                 --jq '.output.annotations[]? | select(.annotation_level == "failure" or .annotation_level == "warning") | "\(.path):\(.start_line // 1) [\(.annotation_level)] \(.message)"' 2>/dev/null || echo "")
               if [ -n "$ANNOTATIONS" ]; then
                 CI_FAILURES+="\nStructured annotations:\n\`\`\`\n$ANNOTATIONS\n\`\`\`\n"
-              else
-                TMP_LOGS_DIR=$(mktemp -d)
-                if gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/logs > "$TMP_LOGS_DIR/logs.zip" 2>/dev/null; then
-                  (cd "$TMP_LOGS_DIR" && unzip -o -q logs.zip 2>/dev/null || true)
-                  LOGS=$(grep -rhi "error\|fail\|panic\|not found\|FAIL:" "$TMP_LOGS_DIR" 2>/dev/null | tail -30 || echo "No error lines found in logs")
-                else
-                  LOGS="Could not fetch logs"
-                fi
-                rm -rf "$TMP_LOGS_DIR"
-                CI_FAILURES+="\n\`\`\`\n$LOGS\n\`\`\`\n"
               fi
+
+              # Gather logs from the workflow-run logs downloaded above (more
+              # reliable than the check-run logs endpoint which frequently 404s).
+              TMP_LOGS_DIR=$(mktemp -d)
+              if gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/logs > "$TMP_LOGS_DIR/logs.zip" 2>/dev/null; then
+                (cd "$TMP_LOGS_DIR" && unzip -o -q logs.zip 2>/dev/null || true)
+              fi
+              # Also copy workflow-run logs as fallback / supplement.
+              if [ -d "$WORKFLOW_LOGS_DIR" ] && find "$WORKFLOW_LOGS_DIR" -name '*.txt' -quit 2>/dev/null | grep -q .; then
+                cp -r "$WORKFLOW_LOGS_DIR"/*.txt "$TMP_LOGS_DIR/" 2>/dev/null || true
+              fi
+
+              # GraphQL / E2E schema errors are the most common root cause of
+              # integration failures but the old grep pattern ("error|fail|...")
+              # did NOT match lines like 'Unknown field "X" on type "Query"'.
+              # Capture them explicitly, plus general errors with context.
+              GRAPHQL_ERRORS=$(grep -rhi \
+                "Unknown field\|Unknown type\|Cannot query field\|Did you mean\|Field .* not defined\|Type .* not defined\|GraphQL errors detected\|schema.*error\|introspection" \
+                "$TMP_LOGS_DIR" 2>/dev/null | sed 's/^[0-9-]*T[0-9:.]*Z[[:space:]]*//' | sort -u || echo "")
+              GENERAL_ERRORS=$(grep -rhi -B1 -A5 \
+                "error\|fail\|panic\|not found\|FAIL:" \
+                "$TMP_LOGS_DIR" 2>/dev/null | sed 's/^[0-9-]*T[0-9:.]*Z[[:space:]]*//' | tail -120 || echo "")
+
+              if [ -n "$GRAPHQL_ERRORS" ]; then
+                CI_FAILURES+="\n### GraphQL / Schema Errors (root cause)\n\`\`\`\n$GRAPHQL_ERRORS\n\`\`\`\n"
+              fi
+              if [ -n "$GENERAL_ERRORS" ]; then
+                CI_FAILURES+="\n### General error log (last 120 lines)\n\`\`\`\n$GENERAL_ERRORS\n\`\`\`\n"
+              fi
+              if [ -z "$GRAPHQL_ERRORS" ] && [ -z "$GENERAL_ERRORS" ]; then
+                CI_FAILURES+="\n(No error lines found in logs)\n"
+              fi
+              rm -rf "$TMP_LOGS_DIR"
             done <<< "$FAILED_CHECKS"
+            rm -rf "$WORKFLOW_LOGS_DIR"
 
             COMBINED="$REVIEW_BODY"
             if [ -n "$REVIEW_COMMENTS" ]; then
@@ -148,6 +185,25 @@ jobs:
             if [ -n "$CI_FAILURES" ]; then
               COMBINED+="\n\n## CI Test Failures (must fix)\n$CI_FAILURES"
             fi
+
+            # Download playwright test artifacts (error-context.md files contain
+            # structured GraphQL errors and DOM state — the richest debug signal).
+            ARTIFACTS_DIR=$(mktemp -d)
+            if [ -n "$WORKFLOW_RUN_ID" ] && [ "$WORKFLOW_RUN_ID" != "null" ]; then
+              ARTIFACT_ID=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts \
+                --jq '[.artifacts[] | select(.name == "playwright-results")] | first | .id' 2>/dev/null || echo "")
+              if [ -n "$ARTIFACT_ID" ] && [ "$ARTIFACT_ID" != "null" ]; then
+                echo "Downloading playwright-results artifact $ARTIFACT_ID"
+                if gh api repos/$GITHUB_REPOSITORY/actions/runs/$WORKFLOW_RUN_ID/artifacts/$ARTIFACT_ID/zip > "$ARTIFACTS_DIR/pw.zip" 2>/dev/null; then
+                  (cd "$ARTIFACTS_DIR" && unzip -o -q pw.zip 2>/dev/null || true)
+                  ERROR_CONTEXT=$(find "$ARTIFACTS_DIR" -name 'error-context.md' -exec cat {} \; 2>/dev/null | head -200 || echo "")
+                  if [ -n "$ERROR_CONTEXT" ]; then
+                    COMBINED+="\n\n## Playwright Error Context (from artifacts)\n\`\`\`markdown\n$ERROR_CONTEXT\n\`\`\`"
+                  fi
+                fi
+              fi
+            fi
+            rm -rf "$ARTIFACTS_DIR"
 
             # Gather PR diff for context (L3 capability upgrade: context-blindness fix)
             PR_DIFF=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files \
