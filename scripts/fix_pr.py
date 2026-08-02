@@ -156,6 +156,16 @@ def main():
             pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
         )
 
+    # Inject design principles (written by L2 into templates/design_principles.md)
+    design_principles_path = os.path.join(os.path.dirname(__file__), "..", "templates", "design_principles.md")
+    if os.path.exists(design_principles_path):
+        with open(design_principles_path) as f:
+            dp = f.read().strip()
+        # Only inject if there's actual content (skip placeholder)
+        if dp and "由 L2 分析" not in dp and len(dp) > 100:
+            task_prompt += f"\n\n{dp}"
+            print(f"Injected design principles ({len(dp)} bytes)")
+
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
     from openhands.sdk.workspace import LocalWorkspace
