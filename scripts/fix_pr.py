@@ -161,10 +161,12 @@ def main():
     if os.path.exists(design_principles_path):
         with open(design_principles_path) as f:
             dp = f.read().strip()
-        # Only inject if there's actual content (skip placeholder)
-        if dp and "由 L2 分析" not in dp and len(dp) > 100:
+        # Only inject if there are actual principle entries (lines starting with "-")
+        # This skips the placeholder header but allows content that mentions "由 L2 分析"
+        principle_lines = [l for l in dp.splitlines() if l.strip().startswith("-")]
+        if principle_lines:
             task_prompt += f"\n\n{dp}"
-            print(f"Injected design principles ({len(dp)} bytes)")
+            print(f"Injected design principles ({len(dp)} bytes, {len(principle_lines)} principles)")
 
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
