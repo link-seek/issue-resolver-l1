@@ -447,6 +447,14 @@ jobs:
           uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
             python ../issue-resolver-scripts/scripts/fix_issue.py
 
+      - name: Write fix context to file
+        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        env:
+          FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
+        run: |
+          echo -e "$FIX_CONTEXT" > /tmp/fix_context.txt
+          echo "Fix context written to /tmp/fix_context.txt ($(wc -c < /tmp/fix_context.txt) bytes)"
+
       - name: Run fix (PR mode)
         if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
         shell: bash
@@ -456,6 +464,7 @@ jobs:
           LLM_BASE_URL: http://localhost:4000/v1
           LLM_API_KEY: sk-litellm-proxy
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          REVIEW_CONTEXT_FILE: /tmp/fix_context.txt
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           REPO_NAME: ${{ github.repository }}
           REVIEW_BODY: ${{ steps.context.outputs.fix_context }}

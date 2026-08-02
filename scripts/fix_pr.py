@@ -102,7 +102,13 @@ def main():
     github_token = get_env("GITHUB_TOKEN")
     pr_number = int(get_env("PR_NUMBER"))
     repo_name = get_env("REPO_NAME")
-    review_body = get_env("REVIEW_BODY")
+    review_body = get_env("REVIEW_BODY", "")
+    # Read from file if available (avoids tmux env var length limit)
+    review_context_file = os.getenv("REVIEW_CONTEXT_FILE", "")
+    if review_context_file and os.path.exists(review_context_file):
+        with open(review_context_file) as f:
+            review_body = f.read()
+        print(f"Read review context from {review_context_file} ({len(review_body)} bytes)")
     iteration = int(get_env("ITERATION", "1"))
 
     print(f"Repo: {repo_name}, PR: #{pr_number}, Iteration: {iteration}")
