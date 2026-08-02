@@ -104,18 +104,19 @@ jobs:
             echo "head_branch=$HEAD_BRANCH" >> $GITHUB_OUTPUT
             echo "head_sha=$HEAD_SHA" >> $GITHUB_OUTPUT
 
+            # Fetch the latest review summary body. Merge all pages first so
+            # sort_by/last operate across the full review set, not per-page.
             REVIEW_BODY=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews \
-              --paginate \
-              --jq '[.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | sort_by(.submitted_at) | last | .body')
+              --paginate 2>/dev/null \
+              | jq -rs '[.[][] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | sort_by(.submitted_at) | last | .body // ""' 2>/dev/null || echo "")
 
-            REVIEW_ID=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews \
-              --paginate \
-              --jq '[.[] | select(.state == "CHANGES_REQUESTED" or .state == "COMMENTED")] | sort_by(.submitted_at) | last | .id')
-            REVIEW_COMMENTS=""
-            if [ -n "$REVIEW_ID" ] && [ "$REVIEW_ID" != "null" ]; then
-              REVIEW_COMMENTS=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/reviews/$REVIEW_ID/comments \
-                --jq '.[] | "\(.path):\(.line) — \(.body[:200])"' 2>/dev/null || echo "")
-            fi
+            # Fetch ALL inline review comments across ALL reviews (not just one).
+            # The pulls/{pr}/comments endpoint returns every review comment on the PR.
+            # Dedup by path:line keeping the newest wording, limit to 30 most recent
+            # unique findings so the agent gets focused, actionable feedback.
+            REVIEW_COMMENTS=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments \
+              --paginate 2>/dev/null \
+              | jq -rs '[.[][] | {p: .path, l: (.line // .original_line // .position // "?"), b: (.body | sub("<!--[^>]*-->"; "") | sub("^\\s+"; "")), t: .created_at}] | sort_by(.t) | reverse | unique_by(.p + ":" + (.l|tostring)) | .[0:30] | .[] | "\(.p):\(.l) — \(.b[0:300])"' 2>/dev/null || echo "")
 
             CI_FAILURES=""
             FAILED_CHECKS=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
@@ -149,8 +150,8 @@ jobs:
               [ -z "$CHECK_ID" ] && continue
               echo "CI check failed: $CHECK_NAME (ID: $CHECK_ID)"
               CI_FAILURES+="\n## CI Check Failed: $CHECK_NAME\n"
-              ANNOTATIONS=$(gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID \
-                --jq '.output.annotations[]? | select(.annotation_level == "failure" or .annotation_level == "warning") | "\(.path):\(.start_line // 1) [\(.annotation_level)] \(.message)"' 2>/dev/null || echo "")
+              ANNOTATIONS=$(gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/annotations \
+                --paginate --jq '.[] | select(.annotation_level == "failure" or .annotation_level == "warning") | "\(.path):\(.start_line // 1) [\(.annotation_level)] \(.message)"' 2>/dev/null || echo "")
               if [ -n "$ANNOTATIONS" ]; then
                 CI_FAILURES+="\nStructured annotations:\n\`\`\`\n$ANNOTATIONS\n\`\`\`\n"
               fi
