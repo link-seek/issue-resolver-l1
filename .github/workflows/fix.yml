@@ -293,7 +293,7 @@ jobs:
             AUTO_FIX_COUNT=$(git log --oneline "${L2_RESET_SHA}^..HEAD" 2>/dev/null | grep "auto-fix:" | wc -l | tr -d ' ')
             echo "Counting auto-fix commits since L2 reset ($L2_RESET_SHA)"
           else
-            AUTO_FIX_COUNT=$(git log --oneline -15 | grep "auto-fix:" | wc -l | tr -d ' ')
+            AUTO_FIX_COUNT=$(git log --oneline -100 | grep "auto-fix:" | wc -l | tr -d ' ')
           fi
           echo "auto_fix_count=$AUTO_FIX_COUNT" >> $GITHUB_OUTPUT
           echo "Auto-fix commits on branch: $AUTO_FIX_COUNT (max: $MAX_ITERATIONS)"
