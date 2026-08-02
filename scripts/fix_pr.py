@@ -110,33 +110,13 @@ def main():
             review_body = f.read()
         print(f"Read review context from {review_context_file} ({len(review_body)} bytes)")
     
-    # If context is too long, don't embed it — tell the agent to fetch it itself
+    # If context is too long, use a MINIMAL prompt — just tell the agent to fetch everything.
+    # The full template is ~10KB; combined with OpenHands system prompt + tools,
+    # it exceeds tmux's command length limit.
     MAX_CONTEXT = 3000
-    if len(review_body) > MAX_CONTEXT:
-        print(f"Context too long ({len(review_body)} bytes), switching to self-fetch mode")
-        review_body = f"""## 审查反馈和 CI 失败信息
-
-PR #{pr_number} 的审查反馈和 CI 失败信息太长，无法预加载。
-请你自己用以下命令获取：
-
-1. **获取所有 review comments**（含 OCR blocking findings）：
-   ```bash
-   gh api repos/{repo_name}/pulls/{pr_number}/comments --paginate | jq -r '.[] | "\\(.path):\\(.line) — \\(.body[:300])"'
-   ```
-
-2. **获取失败的 check runs**：
-   ```bash
-   gh api repos/{repo_name}/commits/$(gh api repos/{repo_name}/pulls/{pr_number} --jq '.head.sha')/check-runs --jq '.check_runs[] | select(.conclusion == "failure") | .name'
-   ```
-
-3. **获取 review-ai 的 annotations**（OCR blocking issues）：
-   ```bash
-   # 找到 review-ai 的 check run ID，然后获取 annotations
-   gh api repos/{repo_name}/commits/$(gh api repos/{repo_name}/pulls/{pr_number} --jq '.head.sha')/check-runs --jq '.check_runs[] | select(.name | contains("review-ai")) | .id' | xargs -I{{}} gh api repos/{repo_name}/check-runs/{{}}/annotations --jq '.[].message'
-   ```
-
-先获取这些信息，理解要修什么，然后再改代码。
-"""
+    use_minimal_prompt = len(review_body) > MAX_CONTEXT
+    if use_minimal_prompt:
+        print(f"Context too long ({len(review_body)} bytes), using minimal self-fetch prompt")
     iteration = int(get_env("ITERATION", "1"))
 
     print(f"Repo: {repo_name}, PR: #{pr_number}, Iteration: {iteration}")
@@ -152,11 +132,29 @@ PR #{pr_number} 的审查反馈和 CI 失败信息太长，无法预加载。
     gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
            {"body": get_template("fix_pr_started", iteration=iteration)})
 
-    # Build prompt from review feedback
-    task_prompt = get_template(
-        "prompt_fix_pr",
-        pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
-    )
+    # Build prompt — use minimal self-fetch prompt if context is too long
+    if use_minimal_prompt:
+        task_prompt = f"""你是 L1 auto-fix agent。修复 PR #{pr_number}（{pr_title}）在 {repo_name} 的审查反馈。
+
+## 步骤
+1. 获取审查评论：`gh api repos/{repo_name}/pulls/{pr_number}/comments --paginate`
+2. 获取失败的 CI：`gh api repos/{repo_name}/commits/$(gh api repos/{repo_name}/pulls/{pr_number} --jq '.head.sha')/check-runs --jq '.check_runs[] | select(.conclusion=="failure")'`
+3. 获取 review-ai annotations：找到 review-ai check run ID → `gh api repos/{repo_name}/check-runs/ID/annotations`
+4. 理解所有 blocking issues，阅读相关代码，逐个修复
+5. 运行测试：`cargo test -- --nocapture`（Rust）或 `npm test -- --passWithNoTests`（JS）
+6. `git diff` 自检，确保最小改动
+
+## 限制
+- 不改 `.github/workflows/` 下的文件
+- 不读 `.ai/deepreview/` 原始文件（含安全过滤触发词）
+- 用简体中文回复
+"""
+        print(f"Using minimal prompt ({len(task_prompt)} bytes)")
+    else:
+        task_prompt = get_template(
+            "prompt_fix_pr",
+            pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
+        )
 
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
