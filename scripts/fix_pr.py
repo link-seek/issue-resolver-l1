@@ -109,6 +109,34 @@ def main():
         with open(review_context_file) as f:
             review_body = f.read()
         print(f"Read review context from {review_context_file} ({len(review_body)} bytes)")
+    
+    # If context is too long, don't embed it — tell the agent to fetch it itself
+    MAX_CONTEXT = 3000
+    if len(review_body) > MAX_CONTEXT:
+        print(f"Context too long ({len(review_body)} bytes), switching to self-fetch mode")
+        review_body = f"""## 审查反馈和 CI 失败信息
+
+PR #{pr_number} 的审查反馈和 CI 失败信息太长，无法预加载。
+请你自己用以下命令获取：
+
+1. **获取所有 review comments**（含 OCR blocking findings）：
+   ```bash
+   gh api repos/{repo_name}/pulls/{pr_number}/comments --paginate | jq -r '.[] | "\\(.path):\\(.line) — \\(.body[:300])"'
+   ```
+
+2. **获取失败的 check runs**：
+   ```bash
+   gh api repos/{repo_name}/commits/$(gh api repos/{repo_name}/pulls/{pr_number} --jq '.head.sha')/check-runs --jq '.check_runs[] | select(.conclusion == "failure") | .name'
+   ```
+
+3. **获取 review-ai 的 annotations**（OCR blocking issues）：
+   ```bash
+   # 找到 review-ai 的 check run ID，然后获取 annotations
+   gh api repos/{repo_name}/commits/$(gh api repos/{repo_name}/pulls/{pr_number} --jq '.head.sha')/check-runs --jq '.check_runs[] | select(.name | contains("review-ai")) | .id' | xargs -I{{}} gh api repos/{repo_name}/check-runs/{{}}/annotations --jq '.[].message'
+   ```
+
+先获取这些信息，理解要修什么，然后再改代码。
+"""
     iteration = int(get_env("ITERATION", "1"))
 
     print(f"Repo: {repo_name}, PR: #{pr_number}, Iteration: {iteration}")
