@@ -467,7 +467,6 @@ jobs:
           REVIEW_CONTEXT_FILE: /tmp/fix_context.txt
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           REPO_NAME: ${{ github.repository }}
-          REVIEW_BODY: ${{ steps.context.outputs.fix_context }}
           ITERATION: ${{ steps.iter-check.outputs.auto_fix_count }}
           HUMAN_REVIEW_PATHS: ${{ inputs.human-review-paths }}
           APP_ID: ${{ secrets.APP_ID }}
