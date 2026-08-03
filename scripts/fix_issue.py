@@ -394,9 +394,21 @@ def main():
 
     llm = LLM(**llm_config)
 
+    # CodeGraph MCP: surgical code context (replaces slow file-by-file exploration)
+    mcp_config = {
+        "mcpServers": {
+            "codegraph": {
+                "name": "codegraph",
+                "command": "codegraph",
+                "args": ["serve", "--mcp"],
+            }
+        }
+    }
+
     agent = Agent(
         llm=llm,
         tools=get_default_tools(enable_browser=False),
+        mcp_config=mcp_config,
         system_prompt_kwargs={"cli_mode": True},
         condenser=get_default_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})

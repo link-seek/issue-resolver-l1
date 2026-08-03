@@ -377,7 +377,7 @@ jobs:
           git config --global user.name "ai-bot"
           git config --global user.email "bot@ai-resolver.dev"
 
-      - name: Install anysearch + OCR CLI
+      - name: Install anysearch + OCR CLI + CodeGraph
         if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
         shell: bash
         run: |
@@ -391,6 +391,17 @@ jobs:
           echo "OCR_LLM_URL=https://api.modelarts-maas.com/v2" >> $GITHUB_ENV
           echo "OCR_LLM_MODEL=glm-5.2" >> $GITHUB_ENV
           echo "OCR_LLM_TOKEN=${{ secrets.LLM_API_KEY }}" >> $GITHUB_ENV
+          # CodeGraph (code knowledge graph for surgical context)
+          npm install -g @colbymchenry/codegraph 2>&1 | tail -3
+          codegraph version || echo "CodeGraph install may have failed"
+
+      - name: Build CodeGraph index
+        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        working-directory: target-repo
+        shell: bash
+        run: |
+          codegraph init --quiet 2>&1 || echo "CodeGraph init failed (non-fatal)"
+          codegraph status 2>&1 | head -10 || true
 
       - name: Setup LiteLLM proxy
         if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
