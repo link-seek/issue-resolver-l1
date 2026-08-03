@@ -134,19 +134,12 @@ jobs:
           echo "ref=$REF" >> "$GITHUB_OUTPUT"
           echo "Testing ref: $REF"
 
-      - name: Checkout (workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           repository: ${{ steps.target.outputs.repo }}
           ref: ${{ steps.ref.outputs.ref }}
           token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Checkout (workflow_call)
-        if: github.event_name == 'workflow_call'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.ref.outputs.ref }}
 
       - name: Resolve commit SHA
         id: sha
