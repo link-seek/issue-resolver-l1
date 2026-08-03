@@ -399,7 +399,7 @@ jobs:
         working-directory: target-repo
         shell: bash
         run: |
-          codegraph init --quiet 2>&1 || echo "CodeGraph init failed (non-fatal)"
+          codegraph init 2>&1 || echo "CodeGraph init failed (non-fatal)"
           codegraph status 2>&1 | head -10 || true
 
       - name: Setup LiteLLM proxy

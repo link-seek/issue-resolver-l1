@@ -396,12 +396,9 @@ def main():
 
     # CodeGraph MCP: surgical code context (replaces slow file-by-file exploration)
     mcp_config = {
-        "mcpServers": {
-            "codegraph": {
-                "name": "codegraph",
-                "command": "codegraph",
-                "args": ["serve", "--mcp"],
-            }
+        "codegraph": {
+            "command": "codegraph",
+            "args": ["serve", "--mcp"],
         }
     }
 
