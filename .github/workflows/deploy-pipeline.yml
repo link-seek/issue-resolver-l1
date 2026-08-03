@@ -90,6 +90,8 @@ on:
         required: false
       APP_SEED_ADMIN_PASSWORD:
         required: false
+      APP_JWT__SECRET:
+        required: false
       SMOKE_TEST_EMAIL:
         required: false
       SMOKE_TEST_PASSWORD:
@@ -207,9 +209,35 @@ jobs:
           ACR_REPO: ${{ inputs.acr-repo }}
           APP_SEED_ADMIN_EMAIL: ${{ secrets.APP_SEED_ADMIN_EMAIL }}
           APP_SEED_ADMIN_PASSWORD: ${{ secrets.APP_SEED_ADMIN_PASSWORD }}
+          APP_JWT__SECRET: ${{ secrets.APP_JWT__SECRET }}
         run: |
           echo "=== Deploying tag: $IMAGE_TAG ==="
           bash ${{ inputs.deploy-script }}
+
+      - name: Ensure JWT secret in service
+        if: always()
+        env:
+          APP_JWT__SECRET: ${{ secrets.APP_JWT__SECRET }}
+        run: |
+          SERVICE_FILE="/etc/systemd/system/eap-backend.service"
+          if [ ! -f "$SERVICE_FILE" ]; then
+            echo "Service file not found, skipping JWT injection"
+            exit 0
+          fi
+          if grep -q 'APP_JWT__SECRET' "$SERVICE_FILE"; then
+            echo "APP_JWT__SECRET already present in service file"
+            exit 0
+          fi
+          if [ -z "$APP_JWT__SECRET" ]; then
+            echo "::warning::APP_JWT__SECRET is empty — backend will fail in production mode"
+            exit 0
+          fi
+          echo "Injecting APP_JWT__SECRET into ExecStart of $SERVICE_FILE"
+          # Insert -e APP_JWT__SECRET=<value> before the last token (image:tag) on the ExecStart line
+          sed -i "/^ExecStart=/ s| \([^ ][^ ]*\)$| -e APP_JWT__SECRET=${APP_JWT__SECRET} \1|" "$SERVICE_FILE"
+          systemctl daemon-reload
+          systemctl restart eap-backend
+          echo "Service restarted with JWT secret"
 
       - name: Verify service started
         if: always()
