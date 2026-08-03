@@ -84,7 +84,7 @@ jobs:
       - name: Checkout issue-resolver scripts
         uses: actions/checkout@v4
         with:
-          repository: link-seek/issue-resolver
+          repository: link-seek/issue-resolver-l1
           ref: main
           path: issue-resolver-scripts
           token: ${{ steps.app-token.outputs.token }}
