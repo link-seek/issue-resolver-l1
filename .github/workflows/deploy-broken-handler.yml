@@ -58,7 +58,7 @@ jobs:
           REPO: ${{ github.repository }}
           RULES_JSON: ${{ inputs.classification-rules }}
         run: |
-          LABELS=$(gh issue view $ISSUE_NUMBER -R "$REPO" --json labels --jq '.labels[].name')
+          export LABELS=$(gh issue view $ISSUE_NUMBER -R "$REPO" --json labels --jq '.labels[].name')
 
           echo "$RULES_JSON" | python3 -c "
           import sys, json, os
