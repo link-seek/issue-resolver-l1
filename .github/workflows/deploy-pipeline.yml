@@ -363,7 +363,7 @@ jobs:
     name: Create Issue on Failure
     needs: [deploy, smoke-test, rollback]
     runs-on: ubuntu-latest
-    if: always() && needs.smoke-test.result == 'failure'
+    if: always() && (needs.smoke-test.result == 'failure' || needs.deploy.result == 'failure' || needs.sync-to-acr.result == 'failure')
     steps:
       - name: Create deploy-broken issue
         uses: actions/github-script@v7
@@ -374,29 +374,49 @@ jobs:
             const api = github.rest;
 
             const smokeResult = '${{ needs.smoke-test.result }}';
+            const deployResult = '${{ needs.deploy.result }}';
+            const syncResult = '${{ needs.sync-to-acr.result }}';
             const rollbackResult = '${{ needs.rollback.result }}';
             const failures = `${{ needs.smoke-test.outputs.failures }}`;
 
             let labels = ['deploy-broken'];
 
-            if (failures.includes('Backend health') || failures.includes('GraphQL')) {
-              labels.push('error-smoke');
-            } else if (failures.includes('E2E')) {
-              labels.push('error-smoke');
-            } else {
+            let failureType = 'unknown';
+            let failureDetail = '';
+
+            if (syncResult === 'failure') {
               labels.push('error-deploy');
+              failureType = 'acr-sync';
+              failureDetail = 'ACR sync (GHCR → ACR) failed';
+            } else if (deployResult === 'failure') {
+              labels.push('error-deploy');
+              failureType = 'deploy-script';
+              failureDetail = 'Deploy script or health check failed';
+            } else if (smokeResult === 'failure') {
+              if (failures.includes('Backend health') || failures.includes('GraphQL') || failures.includes('E2E')) {
+                labels.push('error-smoke');
+              } else {
+                labels.push('error-deploy');
+              }
+              failureType = 'smoke-test';
+              failureDetail = failures || 'Smoke test failed';
             }
 
             let body = `## Deploy Failed
 
             **Image tag**: ${{ inputs.image-tag }}
-            **Smoke test**: ${smokeResult}
+            **Failure type**: ${failureType}
+            **Sync result**: ${syncResult || 'skipped'}
+            **Deploy result**: ${deployResult || 'skipped'}
+            **Smoke test**: ${smokeResult || 'skipped'}
             **Rollback**: ${rollbackResult || 'skipped'}
 
             **API URL**: ${{ inputs.api-url }}
             **Frontend URL**: ${{ inputs.frontend-url }}
 
             ### Failure Details
+
+            ${failureDetail}
 
             \`\`\`
             ${failures || 'No details collected'}
@@ -415,10 +435,11 @@ jobs:
               labels.push('critical');
             }
 
+            const sha = '${{ github.sha }}';
             const issue = await api.issues.create({
               owner,
               repo,
-              title: `deploy-broken: smoke test failed (tag ${{ inputs.image-tag }})`,
+              title: `deploy-broken: ${failureType} failed (tag ${{ inputs.image-tag }})`,
               body,
               labels
             });
