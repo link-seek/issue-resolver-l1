@@ -55,6 +55,7 @@ permissions:
   contents: read
   packages: write
   actions: write
+  issues: write
 
 concurrency:
   group: ci-cd-${{ github.ref }}
@@ -159,3 +160,48 @@ jobs:
             -i "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
             -k "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
           ossutil cp -rf frontend/dist/ "oss://${{ inputs.oss-bucket }}/" --acl public-read
+
+  create-build-issue:
+    name: Create Issue on Build Failure
+    needs: [build-backend, build-frontend]
+    runs-on: ubuntu-latest
+    if: always() && (needs.build-backend.result == 'failure' || needs.build-frontend.result == 'failure')
+    steps:
+      - name: Create build-broken issue
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const repo = context.repo;
+            const backendResult = '${{ needs.build-backend.result }}';
+            const frontendResult = '${{ needs.build-frontend.result }}';
+
+            let labels = ['deploy-broken', 'error-build'];
+            let failedParts = [];
+            if (backendResult === 'failure') failedParts.push('backend');
+            if (frontendResult === 'failure') failedParts.push('frontend');
+
+            let body = `## Build Failed
+
+            **Commit**: ${{ github.sha }}
+            **Branch**: ${{ github.ref_name }}
+            **Failed parts**: ${failedParts.join(', ')}
+
+            ### Build Results
+            - Backend: ${backendResult}
+            - Frontend: ${frontendResult}
+
+            ### Pipeline run
+            [View run](${context.serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${context.runId})
+            `;
+
+            const sha = '${{ github.sha }}';
+            const issue = await github.rest.issues.create({
+              owner: repo.owner,
+              repo: repo.repo,
+              title: `build-broken: ${failedParts.join(', ')} build failed (commit ${sha.slice(0,7)})`,
+              body,
+              labels
+            });
+
+            core.info(`Created issue #${issue.data.number} in ${repo.owner}/${repo.repo}`);
