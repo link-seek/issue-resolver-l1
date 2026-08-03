@@ -26,7 +26,7 @@ on:
       APP_PRIVATE_KEY:
         required: true
       PAT_TOKEN:
-        required: true
+        required: false
 
 permissions:
   contents: write
@@ -110,8 +110,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check PAT_TOKEN availability
+        id: check
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          if [ -n "$PAT_TOKEN" ]; then
+            echo "has_pat=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_pat=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Get issue details
         id: issue
+        if: steps.check.outputs.has_pat == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
@@ -125,6 +137,7 @@ jobs:
           } >> $GITHUB_OUTPUT
 
       - name: Dispatch L2 capability-resolver (flow-fix mode)
+        if: steps.check.outputs.has_pat == 'true'
         env:
           GH_TOKEN: ${{ secrets.PAT_TOKEN }}
         run: |
@@ -142,3 +155,13 @@ jobs:
             -f "inputs[failure-context]=${ISSUE_BODY}" \
             -f "inputs[l2-round]=1" \
             || echo "Failed to dispatch L2"
+
+      - name: Fallback to needs-human (no PAT_TOKEN)
+        if: steps.check.outputs.has_pat == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh issue edit $ISSUE_NUMBER -R "$REPO" --add-label "needs-human"
+          gh issue comment $ISSUE_NUMBER -R "$REPO" --body "⚠️ PAT_TOKEN not available — cannot dispatch L2 automatically. Manual intervention required."
