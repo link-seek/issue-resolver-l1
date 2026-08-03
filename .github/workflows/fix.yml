@@ -271,7 +271,6 @@ jobs:
         working-directory: target-repo
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           MAX_ITERATIONS: ${{ steps.context.outputs.max_iterations }}
@@ -338,7 +337,7 @@ jobs:
               -f "inputs[l2-round]=$L2_ROUND" \
               -f "inputs[revert-last]=$REVERT_LAST" \
               --raw-field "inputs[ci-failures]=$FIX_CONTEXT" \
-              --header "Authorization: token $PAT_TOKEN" \
+              --header "Authorization: token $GH_TOKEN" \
               || echo "Failed to dispatch L2"
 
             BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 Round ${L2_ROUND}/3 (revert-last=${REVERT_LAST})。"
