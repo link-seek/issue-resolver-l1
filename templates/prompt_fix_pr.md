@@ -94,6 +94,31 @@ SeaORM 在 SQLite 中将 `Uuid` 类型存为 **16 字节 binary blob**（`X'...'
 3. 检查 API 是否返回空数据（可能是新过滤条件阻断）
 4. 在 test helper（如 login()）里确保测试用户有完整的权限设置
 
+## 联网搜索能力（anysearch）
+
+你可以用 anysearch 搜索互联网获取信息：
+```bash
+python3 scripts/anysearch_cli.py search "你的搜索词" --max_results 5
+```
+
+适用场景：
+- 不理解某个错误信息时搜索解决方案
+- 查找某个 API 或库的用法
+- 搜索最佳实践和设计模式
+
+## Push 前本地 OCR 验证（必须做，节省 CI 等待时间）
+
+修改完代码后，**push 前必须先跑本地 OCR 验证**：
+
+```bash
+# 跑本地代码审查（使用 --audience agent 获取结构化输出）
+ocr review --audience agent 2>&1
+```
+
+- 如果有 **high severity** findings → 修 → 重新跑 → 直到没有 high severity
+- 如果只有 **medium/low** → 可以 push，CI 会做最终确认
+- **通过本地 OCR 后再 push**，这样能提前发现 review-ai 会报的 blocking issues，省 20-30 分钟 CI 等待
+
 开始修复。
 ## GraphQL Error → E2E Test Failure 因果链
 当 E2E 测试报 `GraphQL errors detected during test` 时，根因通常在后端 resolver：

@@ -148,6 +148,17 @@ def main():
 - 不改 `.github/workflows/` 下的文件
 - 不读 `.ai/deepreview/` 原始文件（含安全过滤触发词）
 - 用简体中文回复
+
+## 联网搜索
+```bash
+python3 scripts/anysearch_cli.py search "搜索词" --max_results 5
+```
+
+## Push 前本地 OCR 验证（必须做）
+```bash
+ocr review --audience agent 2>&1
+```
+有 high severity → 修 → 重跑 → 通过后再 push。
 """
         print(f"Using minimal prompt ({len(task_prompt)} bytes)")
     else:

@@ -377,6 +377,21 @@ jobs:
           git config --global user.name "ai-bot"
           git config --global user.email "bot@ai-resolver.dev"
 
+      - name: Install anysearch + OCR CLI
+        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        shell: bash
+        run: |
+          # anysearch (web search for L1 agent)
+          pip install requests -q
+          # OCR CLI (local code review before push)
+          npm install -g @alibaba-group/open-code-review 2>&1 | tail -3
+          # Configure OCR to use the same LLM as L1
+          export OCR_LLM_URL=https://api.deepseek.com
+          export OCR_LLM_MODEL=deepseek-v4-flash
+          echo "OCR_LLM_URL=https://api.deepseek.com" >> $GITHUB_ENV
+          echo "OCR_LLM_MODEL=deepseek-v4-flash" >> $GITHUB_ENV
+          echo "OCR_LLM_TOKEN=${{ secrets.LLM_API_KEY }}" >> $GITHUB_ENV
+
       - name: Setup LiteLLM proxy
         if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
         shell: bash
