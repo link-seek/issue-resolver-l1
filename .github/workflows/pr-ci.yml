@@ -146,7 +146,8 @@ jobs:
 
   integration:
     needs: [backend-tests, frontend-tests]
-    if: inputs.enable-integration
+    # Only run for same-repo branches (e.g. agent/fix-issue-*) — skip external forks
+    if: inputs.enable-integration && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.e2e-timeout-minutes }}
     steps:
