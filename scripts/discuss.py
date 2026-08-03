@@ -194,12 +194,9 @@ tools = [
 
 # CodeGraph MCP: surgical code context
 mcp_config = {
-    "mcpServers": {
-        "codegraph": {
-            "name": "codegraph",
-            "command": "codegraph",
-            "args": ["serve", "--mcp"],
-        }
+    "codegraph": {
+        "command": "codegraph",
+        "args": ["serve", "--mcp"],
     }
 }
 

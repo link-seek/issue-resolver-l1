@@ -107,7 +107,7 @@ jobs:
       - name: Build CodeGraph index
         working-directory: target-repo
         run: |
-          codegraph init --quiet 2>&1 || echo "CodeGraph init failed (non-fatal)"
+          codegraph init 2>&1 || echo "CodeGraph init failed (non-fatal)"
           codegraph status 2>&1 | head -10 || true
 
       - name: Setup LiteLLM proxy
