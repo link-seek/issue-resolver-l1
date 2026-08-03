@@ -161,28 +161,22 @@ jobs:
 
       - name: Create check-run
         id: check
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          script: |
-            const owner = '${{ steps.target.outputs.owner }}';
-            const repo = '${{ steps.target.outputs.repo_name }}';
-            const sha = '${{ steps.sha.outputs.sha }}';
-
-            const check = await github.rest.checks.create({
-              owner,
-              repo,
-              name: 'e2e-test',
-              head_sha: sha,
-              status: 'in_progress',
-              started_at: new Date().toISOString(),
-              output: {
-                title: 'E2E Test Running',
-                summary: `Running E2E tests for ref ${{ steps.ref.outputs.ref }}`
-              }
-            });
-            core.setOutput('check_id', check.data.id);
-            core.info(`Created check-run ${check.data.id} on ${owner}/${repo}`);
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          OWNER: ${{ steps.target.outputs.owner }}
+          REPO: ${{ steps.target.outputs.repo_name }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          CHECK_ID=$(gh api "repos/$OWNER/$REPO/check-runs" \
+            -X POST \
+            -f name="e2e-test" \
+            -f head_sha="$SHA" \
+            -f status="in_progress" \
+            -f "output[title]=E2E Test Running" \
+            -f "output[summary]=Running E2E tests..." \
+            --jq '.id')
+          echo "check_id=$CHECK_ID" >> "$GITHUB_OUTPUT"
+          echo "Created check-run $CHECK_ID on $OWNER/$REPO"
 
       - name: Build and start services
         run: |
@@ -273,74 +267,85 @@ jobs:
 
       - name: Update check-run
         if: always()
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          script: |
-            const owner = '${{ steps.target.outputs.owner }}';
-            const repo = '${{ steps.target.outputs.repo_name }}';
-            const result = '${{ steps.parse.outputs.result }}';
-            const conclusion = result === 'pass' ? 'success' : 'failure';
-            const title = result === 'pass' ? 'E2E Test Passed' : 'E2E Test Failed';
-            const icon = result === 'pass' ? '✅' : '❌';
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          OWNER: ${{ steps.target.outputs.owner }}
+          REPO: ${{ steps.target.outputs.repo_name }}
+          RESULT: ${{ steps.parse.outputs.result }}
+          REF: ${{ steps.ref.outputs.ref }}
+          FILTER: ${{ inputs.e2e-filter }}
+          CHECK_ID: ${{ steps.check.outputs.check_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ "$RESULT" == "pass" ]; then
+            CONCLUSION="success"
+            TITLE="E2E Test Passed"
+            ICON="✅"
+          else
+            CONCLUSION="failure"
+            TITLE="E2E Test Failed"
+            ICON="❌"
+          fi
 
-            let summary = `${icon} E2E test ${result === 'pass' ? 'passed' : 'failed'} for ref \`${{ steps.ref.outputs.ref }}\`\n\n`;
-            summary += `**Filter**: \`${{ inputs.e2e-filter }}\`\n`;
-            summary += `**Run**: [View](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})\n`;
+          SUMMARY="${ICON} E2E test ${RESULT} for ref ${REF}
+          **Filter**: ${FILTER}
+          **Run**: https://github.com/${OWNER}/${REPO}/actions/runs/${RUN_ID}"
 
-            if (result !== 'pass') {
-              const fs = require('fs');
-              try {
-                const output = fs.readFileSync('/tmp/e2e-output.txt', 'utf8');
-                const lastLines = output.split('\n').slice(-20).join('\n');
-                summary += `\n<details><summary>Last 20 lines of output</summary>\n\n\`\`\`\n${lastLines}\n\`\`\`\n</details>\n`;
-              } catch (e) {}
-            }
+          if [ "$RESULT" != "pass" ] && [ -f /tmp/e2e-output.txt ]; then
+            LAST_LINES=$(tail -20 /tmp/e2e-output.txt 2>/dev/null || true)
+            SUMMARY="${SUMMARY}
 
-            await github.rest.checks.update({
-              owner,
-              repo,
-              check_run_id: ${{ steps.check.outputs.check_id }},
-              status: 'completed',
-              conclusion: conclusion,
-              completed_at: new Date().toISOString(),
-              output: {
-                title: title,
-                summary: summary
-              }
-            });
+          \`\`\`
+          ${LAST_LINES}
+          \`\`\`"
+          fi
+
+          gh api "repos/$OWNER/$REPO/check-runs/$CHECK_ID" \
+            -X PATCH \
+            -f status="completed" \
+            -f conclusion="$CONCLUSION" \
+            -f "output[title]=$TITLE" \
+            -f "output[summary]=$SUMMARY" \
+            2>/dev/null || echo "Failed to update check-run"
 
       - name: Comment on PR
         if: always() && inputs.pr-number != ''
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          script: |
-            const owner = '${{ steps.target.outputs.owner }}';
-            const repo = '${{ steps.target.outputs.repo_name }}';
-            const result = '${{ steps.parse.outputs.result }}';
-            const icon = result === 'pass' ? '✅' : '❌';
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          OWNER: ${{ steps.target.outputs.owner }}
+          REPO: ${{ steps.target.outputs.repo_name }}
+          RESULT: ${{ steps.parse.outputs.result }}
+          REF: ${{ steps.ref.outputs.ref }}
+          FILTER: ${{ inputs.e2e-filter }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [ "$RESULT" == "pass" ]; then
+            ICON="✅"
+            STATUS="Passed"
+          else
+            ICON="❌"
+            STATUS="Failed"
+          fi
 
-            let body = `## ${icon} E2E Test ${result === 'pass' ? 'Passed' : 'Failed'}\n\n`;
-            body += `**Ref**: \`${{ steps.ref.outputs.ref }}\`\n`;
-            body += `**Filter**: \`${{ inputs.e2e-filter }}\`\n`;
-            body += `**Run**: [View](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})\n\n`;
+          BODY="## ${ICON} E2E Test ${STATUS}
 
-            if (result !== 'pass') {
-              const fs = require('fs');
-              try {
-                const output = fs.readFileSync('/tmp/e2e-output.txt', 'utf8');
-                const lastLines = output.split('\n').slice(-20).join('\n');
-                body += `<details><summary>Last 20 lines of output</summary>\n\n\`\`\`\n${lastLines}\n\`\`\`\n</details>\n`;
-              } catch (e) {}
-            }
+          **Ref**: \`${REF}\`
+          **Filter**: \`${FILTER}\`
+          **Run**: https://github.com/${OWNER}/${REPO}/actions/runs/${RUN_ID}"
 
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: parseInt('${{ inputs.pr-number }}'),
-              body
-            });
+          if [ "$RESULT" != "pass" ] && [ -f /tmp/e2e-output.txt ]; then
+            LAST_LINES=$(tail -20 /tmp/e2e-output.txt 2>/dev/null || true)
+            BODY="${BODY}
+
+          \`\`\`
+          ${LAST_LINES}
+          \`\`\`"
+          fi
+
+          gh api "repos/$OWNER/$REPO/issues/$PR_NUMBER/comments" \
+            -f body="$BODY" \
+            2>/dev/null || echo "Failed to comment on PR"
 
       - name: Fail job if E2E failed
         if: steps.parse.outputs.result == 'fail'
