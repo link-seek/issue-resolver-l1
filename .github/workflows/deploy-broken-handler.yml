@@ -9,8 +9,9 @@ on:
         default: |
           [
             {"label":"error-smoke","category":"code","action":"auto-fix","add-labels":["fix-me"],"comment":"Classified as **code bug** (error-smoke) — auto-fix engaged."},
-            {"label":"error-deploy","category":"infrastructure","action":"human","add-labels":["needs-human"],"comment":"Classified as **infrastructure bug** (error-deploy) — needs human investigation."},
-            {"label":null,"category":"unknown","action":"human","add-labels":["needs-human","process-improvement"],"comment":"Could not classify this deploy-broken issue. Manual investigation needed.\n\n**L3 Process Improvement**: This issue has the `process-improvement` label. After resolving, please improve the process so this class of problem can be auto-classified next time."}
+            {"label":"error-build","category":"infrastructure","action":"l2-try","add-labels":[],"comment":"Classified as **build/flow problem** (error-build) — dispatching L2 (flow-fix mode) to fix L1 build workflow."},
+            {"label":"error-deploy","category":"infrastructure","action":"l2-try","add-labels":[],"comment":"Classified as **deploy/flow problem** (error-deploy) — dispatching L2 (flow-fix mode) to fix L1 deploy workflow."},
+            {"label":null,"category":"unknown","action":"l2-try","add-labels":[],"comment":"Could not classify this deploy-broken issue. Dispatching L2 (flow-fix mode) to investigate.\n\nIf L2 cannot resolve after 3 rounds, human intervention will be requested."}
           ]
         type: string
       trigger-label:
@@ -24,6 +25,8 @@ on:
         required: true
       APP_PRIVATE_KEY:
         required: true
+      PAT_TOKEN:
+        required: true
 
 permissions:
   contents: write
@@ -35,6 +38,10 @@ jobs:
     if: github.event.label.name == inputs.trigger-label
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      category: ${{ steps.classify.outputs.category }}
+      action: ${{ steps.classify.outputs.action }}
+      add_labels: ${{ steps.classify.outputs.add_labels }}
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -95,3 +102,43 @@ jobs:
             gh issue edit $ISSUE_NUMBER -R "$REPO" --add-label "$ADD_LABELS"
           fi
           gh issue comment $ISSUE_NUMBER -R "$REPO" --body-file /tmp/comment.txt
+
+  dispatch-l2:
+    name: Dispatch L2 (flow-fix)
+    needs: classify-and-resolve
+    if: always() && needs.classify-and-resolve.outputs.action == 'l2-try'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Get issue details
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          BODY=$(gh issue view $ISSUE_NUMBER -R "$REPO" --json body --jq '.body[:2000]')
+          {
+            echo "body<<ISSUE_EOF"
+            echo "$BODY"
+            echo "ISSUE_EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Dispatch L2 capability-resolver (flow-fix mode)
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          FAILURE_TYPE="${{ needs.classify-and-resolve.outputs.category }}"
+          ISSUE_BODY="${{ steps.issue.outputs.body }}"
+
+          gh api repos/link-seek/issue-resolver-l2/actions/workflows/capability-resolver.yml/dispatches \
+            -X POST \
+            -f ref=main \
+            -f "inputs[consumer-repo]=${{ github.repository }}" \
+            -f "inputs[pr-number]=${{ github.event.issue.number }}" \
+            -f "inputs[head-sha]=issue-${{ github.event.issue.number }}" \
+            -f "inputs[trigger-mode]=flow-fix" \
+            -f "inputs[failure-type]=${FAILURE_TYPE}" \
+            -f "inputs[failure-context]=${ISSUE_BODY}" \
+            -f "inputs[l2-round]=1" \
+            || echo "Failed to dispatch L2"
