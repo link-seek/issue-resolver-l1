@@ -1,0 +1,349 @@
+name: E2E Test
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Branch or SHA to test (empty = current)'
+        required: false
+        default: ''
+        type: string
+      pr-number:
+        description: 'PR number (optional, for comment feedback)'
+        required: false
+        default: ''
+        type: string
+      e2e-filter:
+        description: 'Playwright test filter (e.g. --grep @smoke)'
+        required: false
+        default: '--grep @smoke'
+        type: string
+      e2e-timeout-minutes:
+        description: 'E2E test timeout'
+        required: false
+        default: 20
+        type: number
+      docker-compose-file:
+        description: 'Docker compose file for integration tests'
+        required: false
+        default: 'docker-compose.ci.yml'
+        type: string
+      backend-health-url:
+        description: 'Backend health check URL'
+        required: false
+        default: 'http://localhost:8080/health'
+        type: string
+      frontend-health-url:
+        description: 'Frontend health check URL'
+        required: false
+        default: 'http://localhost:80/health'
+        type: string
+      node-version:
+        description: 'Node.js version'
+        required: false
+        default: '24'
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch or SHA to test'
+        required: true
+        type: string
+      consumer-repo:
+        description: 'Consumer repo (owner/repo, empty = current repo)'
+        required: false
+        default: ''
+        type: string
+      pr-number:
+        description: 'PR number (optional, for comment feedback)'
+        required: false
+        default: ''
+        type: string
+      e2e-filter:
+        description: 'Playwright test filter (e.g. --grep @smoke)'
+        required: false
+        default: '--grep @smoke'
+        type: string
+      e2e-timeout-minutes:
+        description: 'E2E test timeout'
+        required: false
+        default: 20
+        type: number
+      docker-compose-file:
+        description: 'Docker compose file for integration tests'
+        required: false
+        default: 'docker-compose.ci.yml'
+        type: string
+      backend-health-url:
+        description: 'Backend health check URL'
+        required: false
+        default: 'http://localhost:8080/health'
+        type: string
+      frontend-health-url:
+        description: 'Frontend health check URL'
+        required: false
+        default: 'http://localhost:80/health'
+        type: string
+      node-version:
+        description: 'Node.js version'
+        required: false
+        default: '24'
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  actions: write
+  checks: write
+
+jobs:
+  e2e-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.e2e-timeout-minutes }}
+    steps:
+      - name: Resolve target repo
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_REPO: ${{ inputs.consumer-repo }}
+          CALLER_REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT_NAME" == "workflow_dispatch" ] && [ -n "$DISPATCH_REPO" ]; then
+            REPO="$DISPATCH_REPO"
+          else
+            REPO="$CALLER_REPO"
+          fi
+          OWNER=$(echo "$REPO" | cut -d/ -f1)
+          REPO_NAME=$(echo "$REPO" | cut -d/ -f2)
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "owner=$OWNER" >> "$GITHUB_OUTPUT"
+          echo "repo_name=$REPO_NAME" >> "$GITHUB_OUTPUT"
+          echo "Target repo: $REPO"
+
+      - name: Resolve ref
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            REF="$INPUT_REF"
+          else
+            REF="$GITHUB_SHA"
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          echo "Testing ref: $REF"
+
+      - name: Checkout (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.target.outputs.repo }}
+          ref: ${{ steps.ref.outputs.ref }}
+          token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Checkout (workflow_call)
+        if: github.event_name == 'workflow_call'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - name: Resolve commit SHA
+        id: sha
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          TARGET_REPO: ${{ steps.target.outputs.repo }}
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          SHA=$(gh api "repos/$TARGET_REPO/commits/$REF" --jq '.sha' 2>/dev/null || echo "$REF")
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Commit SHA: $SHA"
+
+      - name: Create check-run
+        id: check
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = '${{ steps.target.outputs.owner }}';
+            const repo = '${{ steps.target.outputs.repo_name }}';
+            const sha = '${{ steps.sha.outputs.sha }}';
+
+            const check = await github.rest.checks.create({
+              owner,
+              repo,
+              name: 'e2e-test',
+              head_sha: sha,
+              status: 'in_progress',
+              started_at: new Date().toISOString(),
+              output: {
+                title: 'E2E Test Running',
+                summary: `Running E2E tests for ref ${{ steps.ref.outputs.ref }}`
+              }
+            });
+            core.setOutput('check_id', check.data.id);
+            core.info(`Created check-run ${check.data.id} on ${owner}/${repo}`);
+
+      - name: Build and start services
+        run: |
+          docker compose -f ${{ inputs.docker-compose-file }} up -d --build
+
+      - name: Wait for backend health
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf ${{ inputs.backend-health-url }} 2>/dev/null; then
+              echo "Backend healthy (attempt $i)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Backend failed to start"
+          docker compose -f ${{ inputs.docker-compose-file }} logs backend
+          exit 1
+
+      - name: Wait for frontend health
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf ${{ inputs.frontend-health-url }} 2>/dev/null; then
+              echo "Frontend healthy (attempt $i)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Frontend failed to start"
+          docker compose -f ${{ inputs.docker-compose-file }} logs frontend
+          exit 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm install
+
+      - name: Install Playwright system dependencies
+        working-directory: frontend
+        run: npx playwright install-deps chromium
+
+      - name: Install Playwright browsers
+        working-directory: frontend
+        run: npx playwright install chromium
+
+      - name: Run E2E tests
+        id: e2e
+        working-directory: frontend
+        env:
+          CI: "true"
+        run: |
+          echo "Running E2E with filter: ${{ inputs.e2e-filter }}"
+          npx playwright test ${{ inputs.e2e-filter }} --reporter=line 2>&1 | tee /tmp/e2e-output.txt
+        continue-on-error: true
+
+      - name: Parse E2E result
+        id: parse
+        if: always()
+        env:
+          E2E_OUTCOME: ${{ steps.e2e.outcome }}
+        run: |
+          if [ "$E2E_OUTCOME" == "success" ]; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+            echo "summary=E2E tests passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail" >> "$GITHUB_OUTPUT"
+            # Extract last 20 lines of output as summary
+            tail -20 /tmp/e2e-output.txt > /tmp/e2e-summary.txt 2>/dev/null || true
+            echo "summary=E2E tests failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: frontend/test-results/
+          retention-days: 7
+
+      - name: Cleanup services
+        if: always()
+        run: docker compose -f ${{ inputs.docker-compose-file }} down
+
+      - name: Update check-run
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = '${{ steps.target.outputs.owner }}';
+            const repo = '${{ steps.target.outputs.repo_name }}';
+            const result = '${{ steps.parse.outputs.result }}';
+            const conclusion = result === 'pass' ? 'success' : 'failure';
+            const title = result === 'pass' ? 'E2E Test Passed' : 'E2E Test Failed';
+            const icon = result === 'pass' ? '✅' : '❌';
+
+            let summary = `${icon} E2E test ${result === 'pass' ? 'passed' : 'failed'} for ref \`${{ steps.ref.outputs.ref }}\`\n\n`;
+            summary += `**Filter**: \`${{ inputs.e2e-filter }}\`\n`;
+            summary += `**Run**: [View](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})\n`;
+
+            if (result !== 'pass') {
+              const fs = require('fs');
+              try {
+                const output = fs.readFileSync('/tmp/e2e-output.txt', 'utf8');
+                const lastLines = output.split('\n').slice(-20).join('\n');
+                summary += `\n<details><summary>Last 20 lines of output</summary>\n\n\`\`\`\n${lastLines}\n\`\`\`\n</details>\n`;
+              } catch (e) {}
+            }
+
+            await github.rest.checks.update({
+              owner,
+              repo,
+              check_run_id: ${{ steps.check.outputs.check_id }},
+              status: 'completed',
+              conclusion: conclusion,
+              completed_at: new Date().toISOString(),
+              output: {
+                title: title,
+                summary: summary
+              }
+            });
+
+      - name: Comment on PR
+        if: always() && inputs.pr-number != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = '${{ steps.target.outputs.owner }}';
+            const repo = '${{ steps.target.outputs.repo_name }}';
+            const result = '${{ steps.parse.outputs.result }}';
+            const icon = result === 'pass' ? '✅' : '❌';
+
+            let body = `## ${icon} E2E Test ${result === 'pass' ? 'Passed' : 'Failed'}\n\n`;
+            body += `**Ref**: \`${{ steps.ref.outputs.ref }}\`\n`;
+            body += `**Filter**: \`${{ inputs.e2e-filter }}\`\n`;
+            body += `**Run**: [View](${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId})\n\n`;
+
+            if (result !== 'pass') {
+              const fs = require('fs');
+              try {
+                const output = fs.readFileSync('/tmp/e2e-output.txt', 'utf8');
+                const lastLines = output.split('\n').slice(-20).join('\n');
+                body += `<details><summary>Last 20 lines of output</summary>\n\n\`\`\`\n${lastLines}\n\`\`\`\n</details>\n`;
+              } catch (e) {}
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: parseInt('${{ inputs.pr-number }}'),
+              body
+            });
+
+      - name: Fail job if E2E failed
+        if: steps.parse.outputs.result == 'fail'
+        run: |
+          echo "::error::E2E tests failed"
+          exit 1
