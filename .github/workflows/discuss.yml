@@ -99,6 +99,17 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Install CodeGraph
+        run: |
+          npm install -g @colbymchenry/codegraph 2>&1 | tail -3
+          codegraph version || echo "CodeGraph install may have failed"
+
+      - name: Build CodeGraph index
+        working-directory: target-repo
+        run: |
+          codegraph init --quiet 2>&1 || echo "CodeGraph init failed (non-fatal)"
+          codegraph status 2>&1 | head -10 || true
+
       - name: Setup LiteLLM proxy
         shell: bash
         run: |

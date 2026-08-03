@@ -192,7 +192,18 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
-agent = Agent(llm=llm, tools=tools)
+# CodeGraph MCP: surgical code context
+mcp_config = {
+    "mcpServers": {
+        "codegraph": {
+            "name": "codegraph",
+            "command": "codegraph",
+            "args": ["serve", "--mcp"],
+        }
+    }
+}
+
+agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
 conversation = Conversation(agent=agent)
 
 with open(os.environ["PROMPT_FILE"]) as f:
