@@ -162,7 +162,7 @@ jobs:
       - name: Create check-run
         id: check
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ steps.target.outputs.owner }}
           REPO: ${{ steps.target.outputs.repo_name }}
           SHA: ${{ steps.sha.outputs.sha }}
@@ -268,7 +268,7 @@ jobs:
       - name: Update check-run
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: ${{ steps.target.outputs.owner }}
           REPO: ${{ steps.target.outputs.repo_name }}
           RESULT: ${{ steps.parse.outputs.result }}
