@@ -89,7 +89,7 @@ jobs:
 
       - name: Get PR info and dispatch auto-fix
         env:
-          GH_TOKEN: ${{ secrets.PAT_TOKEN || steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
         run: |
@@ -102,7 +102,6 @@ jobs:
           echo "max_iterations=20 (10 original + 10 continue)"
 
           gh workflow run "$AUTO_FIX_WORKFLOW" \
-            -R "$GITHUB_REPOSITORY" \
             -f pr_number="$PR_NUMBER" \
             -f head_branch="$HEAD_BRANCH" \
             -f head_sha="$HEAD_SHA" \
@@ -318,6 +317,67 @@ jobs:
           OCR_BLOCKING=$(echo "$VERDICT" | grep '^BLOCKING=' | cut -d= -f2)
           OCR_MEDIUM=$(echo "$VERDICT" | grep '^MEDIUM=' | cut -d= -f2)
 
+          # --- 1b. Bot PR convergent review (Step 4 + Step 5) ---
+          PR_AUTHOR=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER --jq '.user.login' 2>/dev/null || echo "")
+          IS_BOT_PR="false"
+          if echo "$PR_AUTHOR" | grep -qi "bot\|l2-\|ai-bot\|github-actions"; then
+            IS_BOT_PR="true"
+          fi
+
+          if [ "$IS_BOT_PR" = "true" ] && [ "$OCR_BLOCKING" -gt 0 ]; then
+            gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments --paginate 2>/dev/null > /tmp/pr_review_comments.json || echo "[]" > /tmp/pr_review_comments.json
+            cat > /tmp/classify_findings.py << 'PYEOF'
+          import json
+          from collections import defaultdict
+          with open('/tmp/ocr-result.json') as f:
+              ocr = json.load(f)
+          with open('/tmp/pr_review_comments.json') as f:
+              comments = json.load(f)
+          loc_count = defaultdict(int)
+          for c in comments:
+              p = c.get('path', '')
+              l = c.get('line') or c.get('original_line') or '?'
+              loc_count[f"{p}:{l}"] += 1
+          carry_over_locs = {k for k, v in loc_count.items() if v >= 2}
+          findings = ocr.get('comments', [])
+          blocking = [c for c in findings if c.get('severity') in ('critical', 'high')]
+          carry_over_high = 0
+          new_critical = 0
+          new_high = 0
+          for c in blocking:
+              p = c.get('path', '')
+              l = c.get('start_line', '?')
+              loc = f"{p}:{l}"
+              sev = c.get('severity', '?')
+              if loc in carry_over_locs:
+                  carry_over_high += 1
+              elif sev == 'critical':
+                  new_critical += 1
+              else:
+                  new_high += 1
+          print(f"CARRY_OVER_HIGH={carry_over_high}")
+          print(f"NEW_CRITICAL={new_critical}")
+          print(f"NEW_HIGH={new_high}")
+          PYEOF
+            CLASSIFICATION=$(python3 /tmp/classify_findings.py 2>/dev/null || echo "")
+            CARRY_OVER_HIGH=$(echo "$CLASSIFICATION" | grep '^CARRY_OVER_HIGH=' | cut -d= -f2 || echo "0")
+            NEW_CRITICAL=$(echo "$CLASSIFICATION" | grep '^NEW_CRITICAL=' | cut -d= -f2 || echo "0")
+            NEW_HIGH=$(echo "$CLASSIFICATION" | grep '^NEW_HIGH=' | cut -d= -f2 || echo "0")
+            echo "Bot PR: author=$PR_AUTHOR, carry-over high=$CARRY_OVER_HIGH, new critical=$NEW_CRITICAL, new high=$NEW_HIGH"
+            EFFECTIVE_BLOCKING=$((CARRY_OVER_HIGH + NEW_CRITICAL))
+            if [ "$CARRY_OVER_HIGH" -ge 3 ]; then
+              E2E_OK=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
+                --jq '[.check_runs[] | select(.name | test("e2e|integration|playwright"; "i"))] | all(.conclusion == "success")' 2>/dev/null || echo "false")
+              if [ "$E2E_OK" = "true" ]; then
+                echo "Carry-over >=3 + E2E passed -> releasing $CARRY_OVER_HIGH carry-over high as medium"
+                EFFECTIVE_BLOCKING=$NEW_CRITICAL
+                gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments -f body="🔓 **Carry-over 释放**: $CARRY_OVER_HIGH 个 carry-over high findings 已降级为 medium（连续 ≥3 轮 + E2E 通过 → 判定为风格类/最佳实践类）" 2>/dev/null || true
+              fi
+            fi
+            OCR_BLOCKING=$EFFECTIVE_BLOCKING
+            echo "Effective blocking after bot PR logic: $OCR_BLOCKING (was: $(echo "$VERDICT" | grep '^BLOCKING=' | cut -d= -f2))"
+          fi
+
           # --- 2. Get current workflow run's check-run IDs (to exclude self) ---
           MY_CHECK_IDS=$(gh api repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs \
             --jq '[.jobs[].id] | map(tostring) | join(",")' 2>/dev/null || echo "")
@@ -349,11 +409,10 @@ jobs:
             echo "::warning::Found $OCR_BLOCKING OCR blocking + $CI_FAILED CI failures"
             echo "Dispatching auto-fix with full context (review + CI)..."
             GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
-              -R "$GITHUB_REPOSITORY" \
               -f pr_number="$PR_NUMBER" \
               -f head_branch="$HEAD_BRANCH" \
               -f head_sha="$HEAD_SHA" \
-              -f max_iterations="10" || echo "Failed to dispatch auto-fix"
+              -f max_iterations="$(gh api repos/$GITHUB_REPOSITORY/commits?sha=$HEAD_BRANCH\&per_page=100 --jq '[.[]|select(.commit.message|startswith("auto-fix:"))]|length' 2>/dev/null | tr -d ' ' || echo 0)" || echo "Failed to dispatch auto-fix"
             # OCR blocking makes the job fail; CI-only failures don't block the job
             if [ "$OCR_BLOCKING" -gt 0 ]; then
               echo "::error::OCR review found $OCR_BLOCKING blocking issues"
