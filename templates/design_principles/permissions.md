@@ -47,6 +47,12 @@
 - `field_guard`：隐藏 `password_hash`、`token_hash`，限制 Admin-only 字段 `email`
 - **不要**：对业务实体只靠 entity_guard（需要更细粒度的 space-level ACL）
 
+### [owner_id 完备性] 所有实体必须有 owner_id，None 视为拒绝访问
+- `ensure_entity_owner_or_admin` 在 `owner_id` 为 `None` 时对非管理员拒绝访问（fail-safe）
+- 回填迁移必须覆盖所有有 owner 概念的实体表，不能只覆盖部分表
+- 未回填的表会导致已存在的实体 owner_id 为 None，非管理员无法访问
+- **不要**：在 owner_id 为 None 时放行非管理员（应 fail-safe 拒绝）
+
 ## 审计
 
 ### [审计操作] 先业务后审计
