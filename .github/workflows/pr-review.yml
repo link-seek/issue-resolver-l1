@@ -89,7 +89,7 @@ jobs:
 
       - name: Get PR info and dispatch auto-fix
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || steps.app-token.outputs.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
         run: |
