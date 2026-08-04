@@ -16,7 +16,11 @@
 ### [调用链路] GraphQL → Service → Domain Entity → Repository
 - Service 不包含业务逻辑（注释："No business logic here — all rules live in the domain model"）
 - Service 仅做编排：调用 Entity 方法 + Repository 持久化
+- GraphQL handler 中的写操作（含 transfer ownership 等）必须通过 Service 层，不能直接调用 `repo.update(db)`
+- 直接绕过 Service 层会丢失审计日志、领域校验和事件发布
+- 重复的 handler 逻辑应提取为共享辅助函数
 - **不要**：在 GraphQL handler 或 Service 中写业务规则
+- **不要**：在 GraphQL handler 中直接调用 Repository 的 update/save 绕过 Service 层
 
 ## 实体设计
 
@@ -90,6 +94,24 @@
 - 单条 save 不用事务
 - 版本创建用事务包裹归档旧版 + 插入新版
 - **不要**：在循环中逐条 save 不用事务（部分失败会数据不一致）
+
+### [DB 唯一约束] 唯一性由数据库保证，不靠应用层 check-then-act
+- 唯一约束（如 sequence_order 唯一）必须在数据库层面用 UNIQUE INDEX 保证
+- 应用层先检查再插入（check-then-act）存在竞态：两个并发请求同时通过检查
+- 应用层检查仅用于友好的错误提示，真正的唯一性保证靠 DB 约束
+- 插入时捕获 DB 唯一约束冲突错误，映射为语义正确的 DomainError（如 `Conflict` / `DuplicateSequenceOrder`）
+- **不要**：仅靠应用层 check-then-act 保证唯一性（并发下会失效）
+
+### [错误传播] 不静默丢弃错误
+- `serde_json::from_str` / `to_string` 失败时用 `map_err` 转为 DomainError，不用 `.ok()` 或 `unwrap_or_default()`
+- 迁移中 `ALTER TABLE ADD COLUMN` 的幂等性靠匹配特定错误码（如 "column already exists"），不用 `let _ =` 吞掉所有错误
+- 无效输入（如 `Uuid::parse_str` 失败）返回明确的 DomainError，不用 `.ok()` 静默转为 None
+- **不要**：用 `.ok()` / `unwrap_or_default()` / `let _ =` 静默丢弃序列化/解析/SQL 错误（会隐藏数据损坏）
+
+### [迁移后端无关] 迁移代码不硬编码数据库后端
+- 查询和操作使用后端无关的 API（`db.execute_unprepared()`），不硬编码 `DatabaseBackend::Sqlite`
+- 如需后端特定逻辑，用 `match db.get_database_backend()` 分支处理所有后端
+- **不要**：在迁移中硬编码单一后端（会导致其他后端如 PostgreSQL/MySQL 执行失败）
 
 ## 版本管理
 
