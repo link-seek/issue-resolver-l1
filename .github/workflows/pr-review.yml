@@ -102,6 +102,7 @@ jobs:
           echo "max_iterations=20 (10 original + 10 continue)"
 
           gh workflow run "$AUTO_FIX_WORKFLOW" \
+            -R "$GITHUB_REPOSITORY" \
             -f pr_number="$PR_NUMBER" \
             -f head_branch="$HEAD_BRANCH" \
             -f head_sha="$HEAD_SHA" \
@@ -348,6 +349,7 @@ jobs:
             echo "::warning::Found $OCR_BLOCKING OCR blocking + $CI_FAILED CI failures"
             echo "Dispatching auto-fix with full context (review + CI)..."
             GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
+              -R "$GITHUB_REPOSITORY" \
               -f pr_number="$PR_NUMBER" \
               -f head_branch="$HEAD_BRANCH" \
               -f head_sha="$HEAD_SHA" \
