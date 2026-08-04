@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -395,12 +396,18 @@ def main():
     llm = LLM(**llm_config)
 
     # CodeGraph MCP: surgical code context (replaces slow file-by-file exploration)
-    mcp_config = {
-        "codegraph": {
-            "command": "codegraph",
-            "args": ["serve", "--mcp"],
+    # Only enable if codegraph is installed (available in PATH)
+    mcp_config = {}
+    if shutil.which("codegraph"):
+        mcp_config = {
+            "codegraph": {
+                "command": "codegraph",
+                "args": ["serve", "--mcp"],
+            }
         }
-    }
+        print("CodeGraph MCP enabled")
+    else:
+        print("CodeGraph not found in PATH — MCP disabled")
 
     agent = Agent(
         llm=llm,
