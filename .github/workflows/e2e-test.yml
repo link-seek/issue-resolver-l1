@@ -249,6 +249,8 @@ jobs:
             echo "Running all E2E tests (no filter)"
             npx playwright test --reporter=line 2>&1 | tee /tmp/e2e-output.txt
           fi
+          # tee masks playwright exit code — preserve it
+          exit ${PIPESTATUS[0]}
         continue-on-error: true
 
       - name: Parse E2E result
