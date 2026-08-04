@@ -132,18 +132,20 @@ python3 scripts/anysearch_cli.py search "你的搜索词" --max_results 5
 - 查找某个 API 或库的用法
 - 搜索最佳实践和设计模式
 
-## Push 前本地 OCR 验证（必须做，节省 CI 等待时间）
+## Push 后自动验证（on_stop.sh hook）
 
-修改完代码后，**push 前必须先跑本地 OCR 验证**：
+修改完代码后，当你调用 FinishTool 时，on_stop.sh hook 会自动执行：
 
-```bash
-# 跑本地代码审查（使用 --audience agent 获取结构化输出）
-ocr review --audience agent 2>&1
-```
+1. **pre-commit**：本地快检，失败则 BLOCK
+2. **git push**：推到 PR 分支，触发 PR CI
+3. **轮询 PR CI**：等待 review-ai + E2E 完成（最多 30 分钟）
+   - review-ai 失败 → BLOCK + 回传 findings
+   - E2E 失败 → BLOCK + 回传 playwright error-context（含 DOM snapshot + selector 错误）
+   - 全通过 → ALLOW
 
-- 如果有 **high severity** findings → 修 → 重新跑 → 直到没有 high severity
-- 如果只有 **medium/low** → 可以 push，CI 会做最终确认
-- **通过本地 OCR 后再 push**，这样能提前发现 review-ai 会报的 blocking issues，省 20-30 分钟 CI 等待
+**如果被 BLOCK**：你会收到结构化失败信息，必须根据反馈修正代码，然后再次调用 FinishTool。hook 会重新跑。
+
+**不要自己跑 OCR 或 E2E** — 这些由 PR CI 共享基础设施执行，确保环境一致、资源隔离。
 
 开始修复。
 ## GraphQL Error → E2E Test Failure 因果链
@@ -210,35 +212,14 @@ curl -s http://localhost:8080/graphql -H 'Content-Type: application/json' \
    - 测试用户（如 CI 中的 seed user）是否有足够的权限
    - auth guard 是否误拒了合法请求（如 token 解析逻辑有 bug）
 
-## 集成测试本地复现
-当单元测试通过但 CI 集成/E2E 测试失败时，**必须在本地复现失败**才能有效修复。
-你有 terminal 和 docker 权限。步骤：
+## E2E 测试修复
 
-1. **启动后端**（在仓库根目录）：
-   ```bash
-   docker compose -f docker-compose.ci.yml up -d --build
-   # 等待后端健康
-   for i in $(seq 1 60); do curl -sf http://localhost:8080/health && break; sleep 2; done
-   ```
-2. **安装 Playwright**（在 frontend 目录）：
-   ```bash
-   cd frontend && npm install && npx playwright install-deps chromium && npx playwright install chromium
-   ```
-3. **运行 E2E 测试**（用 CI 相同的 filter）：
-   ```bash
-   npx playwright test --grep @smoke --reporter=line
-   ```
-4. **查看错误**：测试输出会显示 `GraphQL errors detected during test` 和具体的
-   `Unknown field` 错误。`test-results/` 下有 `error-context.md` 和截图。
-5. **迭代修复**：修后端代码 → 重新 build 后端 → 重跑 E2E：
-   ```bash
-   docker compose -f docker-compose.ci.yml up -d --build
-   npx playwright test --grep @smoke --reporter=line
-   ```
-6. **完成后清理**：`docker compose -f docker-compose.ci.yml down`
+当 on_stop.sh hook 报告 E2E 失败时，playwright error-context.md 包含：
+- 具体的 selector 错误（如 `getByRole('textbox', { name: /版本/ })` 超时）
+- 实际 DOM snapshot（显示真实的元素结构和 aria 属性）
+- 截图（test-failed-1.png）
 
-> 注意：Rust 首次 build 可能需要 4-5 分钟。后续增量 build 会快很多。
-> 如果 docker 不可用，至少用 GraphQL introspection（见上方）检查 schema。
+**修复策略**：根据实际 DOM 修正测试 selector，不要猜测。
 
 ## Rust 事务安全规则
 当 `save()` 后跟 `audit_log()` 时，如果 audit_log 失败：

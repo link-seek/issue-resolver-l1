@@ -359,19 +359,32 @@ ocr review --audience agent 2>&1
 
     print(f"Changes detected:\n{status_after}")
 
-    # Commit and push — refresh token first
+    # Commit and push
+    # on_stop.sh hook handles push + CI verification during agent execution.
+    # If the hook already pushed (remote SHA matches local), skip.
+    # Otherwise, push here as fallback (e.g., issue mode without hook).
+    github_token = get_valid_token()
+    push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
+
     subprocess.run(["git", "add", "-A"], check=True)
     commit_msg = get_template("fix_pr_commit", iteration=iteration)
     subprocess.run(["git", "commit", "-m", commit_msg], check=True)
 
-    github_token = get_valid_token()
-    push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
-    subprocess.run(["git", "push", push_url], check=True)
+    # Check if on_stop.sh already pushed this commit
+    local_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    remote_sha = subprocess.run(
+        ["git", "ls-remote", "origin", pr_branch],
+        capture_output=True, text=True
+    ).stdout.strip().split()[0] if pr_branch else ""
+
+    if local_sha != remote_sha:
+        print("on_stop.sh did not push, pushing as fallback...")
+        subprocess.run(["git", "push", push_url], check=True)
+    else:
+        print("on_stop.sh already pushed, skipping push")
 
     # Get commit SHA
-    commit_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
-    ).stdout.strip()[:12]
+    commit_sha = local_sha[:12]
 
     gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
            {"body": get_template("fix_pr_pushed", commit_sha=commit_sha)})

@@ -44,9 +44,9 @@ on:
         default: false
         type: boolean
       e2e-filter:
-        description: 'Playwright test filter (e.g. --grep @smoke)'
+        description: 'Playwright test filter (empty = all tests, --grep @smoke for smoke only)'
         required: false
-        default: '--grep @smoke'
+        default: ''
         type: string
       e2e-timeout-minutes:
         description: 'E2E test timeout'
@@ -206,8 +206,14 @@ jobs:
         env:
           CI: "true"
         run: |
-          echo "Running E2E with filter: ${{ inputs.e2e-filter }}"
-          npx playwright test ${{ inputs.e2e-filter }} --reporter=line
+          FILTER="${{ inputs.e2e-filter }}"
+          if [ -n "$FILTER" ]; then
+            echo "Running E2E with filter: $FILTER"
+            npx playwright test $FILTER --reporter=line
+          else
+            echo "Running all E2E tests (no filter)"
+            npx playwright test --reporter=line
+          fi
 
       - name: Upload test artifacts
         if: always()
