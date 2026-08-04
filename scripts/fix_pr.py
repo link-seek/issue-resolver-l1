@@ -91,6 +91,80 @@ _REDACT_MODE_PREFIX = (
 )
 
 
+def build_decision_ledger(pr_number: int, repo_name: str, token: str, iteration: int) -> str:
+    """构建跨轮决策账本（Qodo Repeat/Contradiction 模式）。
+
+    从同一 PR 的 review comments 中提取：
+    - Repeat: 同一 path:line 在多轮中出现
+    - Contradiction: 同一 path:line 建议翻转
+
+    只在同一 PR 内做比对，不做跨 PR 关联。
+    """
+    from collections import defaultdict
+
+    try:
+        comments = gh_api("GET", f"{repo_name}/pulls/{pr_number}/comments", token)
+        if not isinstance(comments, list) or len(comments) < 2:
+            return ""
+    except Exception:
+        return ""
+
+    by_location: dict[str, list] = defaultdict(list)
+    for c in comments:
+        path = c.get("path", "")
+        line = c.get("line") or c.get("original_line") or c.get("position") or "?"
+        key = f"{path}:{line}"
+        body = (c.get("body") or "").strip()
+        body = re.sub(r"<!--[^>]*-->", "", body).strip()
+        if body:
+            by_location[key].append({
+                "body": body[:200],
+                "created_at": c.get("created_at", ""),
+            })
+
+    repeats: list[tuple[str, int, str]] = []
+    contradictions: list[tuple[str, str, str]] = []
+    for key, entries in by_location.items():
+        if len(entries) < 2:
+            continue
+        entries.sort(key=lambda e: e["created_at"])
+        repeats.append((key, len(entries), entries[-1]["body"]))
+        if len(entries) >= 2:
+            prev = entries[-2]["body"][:100]
+            curr = entries[-1]["body"][:100]
+            if prev != curr and not prev.startswith(curr[:30]):
+                contradictions.append((key, prev, curr))
+
+    if not repeats and not contradictions:
+        return ""
+
+    lines = ["\n\n## 跨轮决策账本（Qodo Repeat/Contradiction 模式）"]
+    lines.append(f"（基于 PR #{pr_number} 的 {len(comments)} 条 review comments，当前第 {iteration} 轮）\n")
+
+    if repeats:
+        lines.append("### Repeat findings（跨轮重复，优先修复）")
+        for key, count, body in sorted(repeats, key=lambda x: -x[1])[:10]:
+            lines.append(f"- [Repeat×{count}] {key} — {body[:120]}")
+        lines.append("")
+
+    if contradictions:
+        lines.append("### Contradiction findings（review-ai 标准漂移，不要盲目跟随）")
+        for key, prev, curr in contradictions[:5]:
+            lines.append(f"- [Contradiction] {key}")
+            lines.append(f"  上轮: {prev[:80]}")
+            lines.append(f"  本轮: {curr[:80]}")
+        lines.append("")
+
+    high_repeat = [r for r in repeats if r[1] >= 3]
+    if high_repeat:
+        lines.append(
+            f"⚠️ 有 {len(high_repeat)} 个 finding 已重复 ≥3 轮，"
+            "L1 可能无法修复，可能需要 L2 介入。"
+        )
+
+    return "\n".join(lines)
+
+
 def main():
     print("=" * 60)
     print("PR Auto-Fix (OpenHands SDK + LocalWorkspace)")
@@ -179,6 +253,12 @@ ocr review --audience agent 2>&1
             task_prompt += f"\n\n{dp}"
             print(f"Injected design principles ({len(dp)} bytes, {len(principle_lines)} principles)")
 
+    # Inject cross-round decision ledger (Qodo Repeat/Contradiction pattern)
+    ledger = build_decision_ledger(pr_number, repo_name, github_token, iteration)
+    if ledger:
+        task_prompt += ledger
+        print(f"Injected decision ledger ({len(ledger)} bytes)")
+
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
     from openhands.sdk.workspace import LocalWorkspace
@@ -198,18 +278,9 @@ ocr review --audience agent 2>&1
 
     llm = LLM(**llm_config)
 
-    # CodeGraph MCP: surgical code context (replaces slow file-by-file exploration)
-    mcp_config = {
-        "codegraph": {
-            "command": "codegraph",
-            "args": ["serve", "--mcp"],
-        }
-    }
-
     agent = Agent(
         llm=llm,
         tools=get_default_tools(enable_browser=False),
-        mcp_config=mcp_config,
         system_prompt_kwargs={"cli_mode": True},
         condenser=get_default_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})
