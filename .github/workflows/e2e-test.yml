@@ -14,9 +14,9 @@ on:
         default: ''
         type: string
       e2e-filter:
-        description: 'Playwright test filter (e.g. --grep @smoke)'
+        description: 'Playwright test filter (empty = all tests, --grep @smoke for smoke only)'
         required: false
-        default: '--grep @smoke'
+        default: ''
         type: string
       e2e-timeout-minutes:
         description: 'E2E test timeout'
@@ -60,9 +60,9 @@ on:
         default: ''
         type: string
       e2e-filter:
-        description: 'Playwright test filter (e.g. --grep @smoke)'
+        description: 'Playwright test filter (empty = all tests, --grep @smoke for smoke only)'
         required: false
-        default: '--grep @smoke'
+        default: ''
         type: string
       e2e-timeout-minutes:
         description: 'E2E test timeout'
@@ -140,6 +140,21 @@ jobs:
           repository: ${{ steps.target.outputs.repo }}
           ref: ${{ steps.ref.outputs.ref }}
           token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Coverage gate
+        run: |
+          # Baseline: test coverage must not decrease
+          SPEC_COUNT=$(find frontend/tests -name '*.spec.ts' 2>/dev/null | wc -l)
+          echo "Spec files found: $SPEC_COUNT"
+          if [ "$SPEC_COUNT" -lt 14 ]; then
+            echo "::error::Test coverage baseline violated: $SPEC_COUNT spec files < 14 minimum"
+            exit 1
+          fi
+          # Verify e2e-filter is not restricted to smoke-only in dev phase
+          FILTER="${{ inputs.e2e-filter }}"
+          if [ "$FILTER" = "--grep @smoke" ]; then
+            echo "::warning::e2e-filter is @smoke only — development phase should run all tests"
+          fi
 
       - name: Resolve commit SHA
         id: sha
@@ -226,8 +241,14 @@ jobs:
         env:
           CI: "true"
         run: |
-          echo "Running E2E with filter: ${{ inputs.e2e-filter }}"
-          npx playwright test ${{ inputs.e2e-filter }} --reporter=line 2>&1 | tee /tmp/e2e-output.txt
+          FILTER="${{ inputs.e2e-filter }}"
+          if [ -n "$FILTER" ]; then
+            echo "Running E2E with filter: $FILTER"
+            npx playwright test $FILTER --reporter=line 2>&1 | tee /tmp/e2e-output.txt
+          else
+            echo "Running all E2E tests (no filter)"
+            npx playwright test --reporter=line 2>&1 | tee /tmp/e2e-output.txt
+          fi
         continue-on-error: true
 
       - name: Parse E2E result
