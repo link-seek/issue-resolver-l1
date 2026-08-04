@@ -241,13 +241,20 @@ ocr review --audience agent 2>&1
             pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
         )
 
-    # Inject design principles (written by L2 into templates/design_principles.md)
-    design_principles_path = os.path.join(os.path.dirname(__file__), "..", "templates", "design_principles.md")
-    if os.path.exists(design_principles_path):
-        with open(design_principles_path) as f:
-            dp = f.read().strip()
-        # Only inject if there are actual principle entries (lines starting with "-")
-        # This skips the placeholder header but allows content that mentions "由 L2 分析"
+    # Inject design principles from design_principles/ directory (or legacy single file)
+    design_principles_dir = os.path.join(os.path.dirname(__file__), "..", "templates", "design_principles")
+    design_principles_legacy = os.path.join(os.path.dirname(__file__), "..", "templates", "design_principles.md")
+    dp_parts = []
+    if os.path.isdir(design_principles_dir):
+        for fname in sorted(os.listdir(design_principles_dir)):
+            if fname.endswith(".md"):
+                with open(os.path.join(design_principles_dir, fname)) as f:
+                    dp_parts.append(f.read().strip())
+    elif os.path.exists(design_principles_legacy):
+        with open(design_principles_legacy) as f:
+            dp_parts.append(f.read().strip())
+    if dp_parts:
+        dp = "\n\n".join(dp_parts)
         principle_lines = [l for l in dp.splitlines() if l.strip().startswith("-")]
         if principle_lines:
             task_prompt += f"\n\n{dp}"
