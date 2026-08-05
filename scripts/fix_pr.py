@@ -171,8 +171,8 @@ def main():
     print("=" * 60)
 
     api_key = get_env("LLM_API_KEY")
-    model = get_env("LLM_MODEL", "openai/deepseek-v4-flash")
-    base_url = get_env("LLM_BASE_URL", "https://api.deepseek.com")
+    model = get_env("LLM_MODEL", "openai/primary")
+    base_url = get_env("LLM_BASE_URL", "")
     github_token = get_env("GITHUB_TOKEN")
     pr_number = int(get_env("PR_NUMBER"))
     repo_name = get_env("REPO_NAME")
