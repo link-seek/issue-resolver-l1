@@ -379,7 +379,8 @@ def main():
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
     from openhands.sdk.workspace import LocalWorkspace
-    from openhands.tools.preset.default import get_default_condenser, get_default_tools
+    from openhands.tools.preset.default import get_default_tools
+    from openhands.sdk.context.condenser.llm_summarizing_condenser import LLMSummarizingCondenser
 
     logger = get_logger(__name__)
     logger.info("Creating OpenHands agent with LocalWorkspace...")
@@ -414,8 +415,11 @@ def main():
         tools=get_default_tools(enable_browser=False),
         mcp_config=mcp_config,
         system_prompt_kwargs={"cli_mode": True},
-        condenser=get_default_condenser(
-            llm=llm.model_copy(update={"usage_id": "condenser"})
+        condenser=LLMSummarizingCondenser(
+            llm=llm.model_copy(update={"usage_id": "condenser"}),
+            max_size=80,
+            keep_first=4,
+            max_tokens=60000,
         ),
     )
 
