@@ -213,7 +213,7 @@ jobs:
           SECONDARY_BASE: ${{ secrets.SECONDARY_API_BASE }}
           SECONDARY_MODEL: ${{ secrets.SECONDARY_MODEL }}
         run: |
-          HOUR_BEIJING=$(( ($(date -u +%H) + 8) % 24 ))
+          HOUR_BEIJING=$(( (10#$(date -u +%H) + 8) % 24 ))
           if [ "$HOUR_BEIJING" -ge 9 ] && [ "$HOUR_BEIJING" -lt 18 ]; then
             echo "Beijing $HOUR_BEIJING:00 — working hours, using primary model"
             echo "active_model=primary" >> $GITHUB_OUTPUT
