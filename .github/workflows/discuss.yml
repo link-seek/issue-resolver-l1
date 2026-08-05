@@ -113,12 +113,12 @@ jobs:
       - name: Setup LiteLLM proxy
         shell: bash
         env:
-          MAAS_KEY_1: ${{ secrets.MAAS_API_KEY_1 }}
-          MAAS_KEY_2: ${{ secrets.MAAS_API_KEY_2 }}
-          MAAS_KEY_3: ${{ secrets.MAAS_API_KEY_3 }}
-          MAAS_BASE: ${{ secrets.MAAS_API_BASE }}
-          DEEPSEEK_KEY: ${{ secrets.LLM_API_KEY_1 }}
-          DEEPSEEK_BASE: ${{ secrets.DEEPSEEK_API_BASE }}
+          PRIMARY_KEY_1: ${{ secrets.PRIMARY_API_KEY_1 }}
+          PRIMARY_KEY_2: ${{ secrets.PRIMARY_API_KEY_2 }}
+          PRIMARY_KEY_3: ${{ secrets.PRIMARY_API_KEY_3 }}
+          PRIMARY_BASE: ${{ secrets.PRIMARY_API_BASE }}
+          SECONDARY_KEY: ${{ secrets.LLM_API_KEY_1 }}
+          SECONDARY_BASE: ${{ secrets.SECONDARY_API_BASE }}
         run: |
           HOUR_BEIJING=$(( ($(date -u +%H) + 8) % 24 ))
           if [ "$HOUR_BEIJING" -ge 9 ] && [ "$HOUR_BEIJING" -lt 18 ]; then
@@ -128,18 +128,18 @@ jobs:
             - model_name: primary
               litellm_params:
                 model: openai/primary
-                api_key: ${MAAS_KEY_1}
-                api_base: ${MAAS_BASE}
+                api_key: ${PRIMARY_KEY_1}
+                api_base: ${PRIMARY_BASE}
             - model_name: primary
               litellm_params:
                 model: openai/primary
-                api_key: ${MAAS_KEY_2}
-                api_base: ${MAAS_BASE}
+                api_key: ${PRIMARY_KEY_2}
+                api_base: ${PRIMARY_BASE}
             - model_name: primary
               litellm_params:
                 model: openai/primary
-                api_key: ${MAAS_KEY_3}
-                api_base: ${MAAS_BASE}
+                api_key: ${PRIMARY_KEY_3}
+                api_base: ${PRIMARY_BASE}
           EOF
           else
             echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model"
@@ -148,8 +148,8 @@ jobs:
             - model_name: secondary
               litellm_params:
                 model: openai/secondary
-                api_key: ${DEEPSEEK_KEY}
-                api_base: ${DEEPSEEK_BASE}
+                api_key: ${SECONDARY_KEY}
+                api_base: ${SECONDARY_BASE}
           EOF
           fi
           cat >> /tmp/litellm_config.yaml << 'EOF'
