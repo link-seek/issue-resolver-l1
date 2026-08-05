@@ -201,47 +201,49 @@ jobs:
           echo "Resolved model: $MODEL"
 
       - name: Setup LiteLLM proxy
+        id: litellm-setup
         shell: bash
         env:
           PRIMARY_KEY_1: ${{ secrets.PRIMARY_API_KEY_1 }}
           PRIMARY_KEY_2: ${{ secrets.PRIMARY_API_KEY_2 }}
           PRIMARY_KEY_3: ${{ secrets.PRIMARY_API_KEY_3 }}
           PRIMARY_BASE: ${{ secrets.PRIMARY_API_BASE }}
-          SECONDARY_KEY: ${{ secrets.LLM_API_KEY_1 }}
+          PRIMARY_MODEL: ${{ secrets.PRIMARY_MODEL }}
+          SECONDARY_KEY: ${{ secrets.SECONDARY_API_KEY }}
           SECONDARY_BASE: ${{ secrets.SECONDARY_API_BASE }}
+          SECONDARY_MODEL: ${{ secrets.SECONDARY_MODEL }}
         run: |
           HOUR_BEIJING=$(( ($(date -u +%H) + 8) % 24 ))
           if [ "$HOUR_BEIJING" -ge 9 ] && [ "$HOUR_BEIJING" -lt 18 ]; then
             echo "Beijing $HOUR_BEIJING:00 — working hours, using primary model"
-            cat > /tmp/litellm_config.yaml << EOF
+            echo "active_model=primary" >> $GITHUB_OUTPUT
+          else
+            echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model"
+            echo "active_model=secondary" >> $GITHUB_OUTPUT
+          fi
+          cat > /tmp/litellm_config.yaml << EOF
           model_list:
             - model_name: primary
               litellm_params:
-                model: openai/primary
+                model: openai/${PRIMARY_MODEL}
                 api_key: ${PRIMARY_KEY_1}
                 api_base: ${PRIMARY_BASE}
             - model_name: primary
               litellm_params:
-                model: openai/primary
+                model: openai/${PRIMARY_MODEL}
                 api_key: ${PRIMARY_KEY_2}
                 api_base: ${PRIMARY_BASE}
             - model_name: primary
               litellm_params:
-                model: openai/primary
+                model: openai/${PRIMARY_MODEL}
                 api_key: ${PRIMARY_KEY_3}
                 api_base: ${PRIMARY_BASE}
-          EOF
-          else
-            echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model"
-            cat > /tmp/litellm_config.yaml << EOF
-          model_list:
             - model_name: secondary
               litellm_params:
-                model: openai/secondary
+                model: openai/${SECONDARY_MODEL}
                 api_key: ${SECONDARY_KEY}
                 api_base: ${SECONDARY_BASE}
           EOF
-          fi
           cat >> /tmp/litellm_config.yaml << 'EOF'
           router_settings:
             routing_strategy: simple-shuffle
@@ -278,7 +280,7 @@ jobs:
         with:
           llm_url: http://localhost:4000/v1
           llm_auth_token: sk-litellm-proxy
-          llm_model: ${{ steps.llm.outputs.model }}
+          llm_model: ${{ steps.litellm-setup.outputs.active_model }}
           llm_use_anthropic: 'false'
           language: '中文'
           incremental: 'true'
