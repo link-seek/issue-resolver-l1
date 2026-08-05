@@ -306,8 +306,8 @@ def main():
     discussion_node_id = os.environ.get("DISCUSSION_NODE_ID", "")
     repo_name = os.environ.get("REPO_NAME", "")
     discuss_mode = os.environ.get("DISCUSS_MODE", "discuss")
-    llm_model = os.environ.get("LLM_MODEL", "openai/deepseek-v4-flash")
-    llm_base_url = os.environ.get("LLM_BASE_URL", "https://api.deepseek.com")
+    llm_model = os.environ.get("LLM_MODEL", "openai/primary")
+    llm_base_url = os.environ.get("LLM_BASE_URL", "")
     llm_api_key = os.environ.get("LLM_API_KEY", "")
     _ = (llm_model, llm_base_url, llm_api_key)  # used via env in subprocess
 
