@@ -112,24 +112,47 @@ jobs:
 
       - name: Setup LiteLLM proxy
         shell: bash
+        env:
+          MAAS_KEY_1: ${{ secrets.MAAS_API_KEY_1 }}
+          MAAS_KEY_2: ${{ secrets.MAAS_API_KEY_2 }}
+          MAAS_KEY_3: ${{ secrets.MAAS_API_KEY_3 }}
+          MAAS_BASE: ${{ secrets.MAAS_API_BASE }}
+          DEEPSEEK_KEY: ${{ secrets.LLM_API_KEY_1 }}
+          DEEPSEEK_BASE: ${{ secrets.DEEPSEEK_API_BASE }}
         run: |
-          cat > /tmp/litellm_config.yaml << 'EOF'
+          HOUR_BEIJING=$(( ($(date -u +%H) + 8) % 24 ))
+          if [ "$HOUR_BEIJING" -ge 9 ] && [ "$HOUR_BEIJING" -lt 18 ]; then
+            echo "Beijing $HOUR_BEIJING:00 — working hours, using primary model"
+            cat > /tmp/litellm_config.yaml << EOF
           model_list:
-            - model_name: deepseek-v4-flash
+            - model_name: primary
               litellm_params:
-                model: openai/deepseek-v4-flash
-                api_key: ${{ secrets.LLM_API_KEY_1 }}
-                api_base: https://api.deepseek.com
-            - model_name: deepseek-v4-flash
+                model: openai/primary
+                api_key: ${MAAS_KEY_1}
+                api_base: ${MAAS_BASE}
+            - model_name: primary
               litellm_params:
-                model: openai/deepseek-v4-flash
-                api_key: ${{ secrets.LLM_API_KEY_2 }}
-                api_base: https://api.deepseek.com
-            - model_name: deepseek-v4-flash
+                model: openai/primary
+                api_key: ${MAAS_KEY_2}
+                api_base: ${MAAS_BASE}
+            - model_name: primary
               litellm_params:
-                model: openai/deepseek-v4-flash
-                api_key: ${{ secrets.LLM_API_KEY_3 }}
-                api_base: https://api.deepseek.com
+                model: openai/primary
+                api_key: ${MAAS_KEY_3}
+                api_base: ${MAAS_BASE}
+          EOF
+          else
+            echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model"
+            cat > /tmp/litellm_config.yaml << EOF
+          model_list:
+            - model_name: secondary
+              litellm_params:
+                model: openai/secondary
+                api_key: ${DEEPSEEK_KEY}
+                api_base: ${DEEPSEEK_BASE}
+          EOF
+          fi
+          cat >> /tmp/litellm_config.yaml << 'EOF'
           router_settings:
             routing_strategy: simple-shuffle
             num_retries: 3
