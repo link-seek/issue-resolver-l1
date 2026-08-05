@@ -387,7 +387,7 @@ jobs:
           echo "Waiting for all other gates to complete..."
           for i in $(seq 1 60); do
             PENDING=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
-              --jq "[.check_runs[] | select(.name | startswith(\"pr-review\")) | not) and .status != \"completed\"] | length" 2>/dev/null || echo "0")
+              --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.status != \"completed\")] | length" 2>/dev/null || echo "0")
             if [ "$PENDING" -eq 0 ]; then
               echo "All gates completed (waited $((i*10))s)"
               break
@@ -398,7 +398,7 @@ jobs:
 
           # --- 4. Collect CI failures ---
           CI_FAILED=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
-            --jq "[.check_runs[] | select(.name | startswith(\"pr-review\")) | not) and .conclusion == \"failure\"] | length" 2>/dev/null || echo "0")
+            --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.conclusion == \"failure\")] | length" 2>/dev/null || echo "0")
 
           echo "OCR blocking: $OCR_BLOCKING"
           echo "OCR medium: $OCR_MEDIUM"
