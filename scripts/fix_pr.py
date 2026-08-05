@@ -320,7 +320,7 @@ ocr review --audience agent 2>&1
             agent=agent,
             workspace=workspace,
             secrets=secrets,
-            max_iteration_per_run=30,
+            max_iteration_per_run=100,
         )
         prompt = task_prompt if attempt == 1 else _REDACT_MODE_PREFIX + task_prompt
         try:
