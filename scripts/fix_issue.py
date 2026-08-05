@@ -535,7 +535,7 @@ def main():
     # Push — refresh token first (may have been hours since start)
     github_token = get_valid_token()
     push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
-    subprocess.run(["git", "push", push_url, branch], check=True)
+    subprocess.run(["git", "push", "--force", push_url, branch], check=True)
 
     # Run tests
     print("Running tests...")
