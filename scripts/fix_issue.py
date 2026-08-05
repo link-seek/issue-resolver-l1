@@ -419,7 +419,7 @@ def main():
             llm=llm.model_copy(update={"usage_id": "condenser"}),
             max_size=80,
             keep_first=4,
-            max_tokens=60000,
+            max_tokens=int(get_env("LLM_MAX_TOKENS", "120000")),
         ),
     )
 
