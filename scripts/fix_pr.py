@@ -31,7 +31,7 @@ def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict
 
 
 # ── Content-filter handling ──────────────────────────────────────────────
-# Some model APIs (e.g. DeepSeek) reject requests whose text
+# Some model APIs reject requests whose text
 # contains security-policy language ("bypass", "unauthenticated attacker",
 # "permission bypass", "security hole", …) with an error like:
 #   "Input text May contain sensitive information, please try again."
