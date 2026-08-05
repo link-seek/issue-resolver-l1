@@ -383,7 +383,7 @@ ocr review --audience agent 2>&1
 
     if local_sha != remote_sha:
         print("on_stop.sh did not push, pushing as fallback...")
-        subprocess.run(["git", "push", push_url], check=True)
+        subprocess.run(["git", "push", "--force", push_url], check=True)
     else:
         print("on_stop.sh already pushed, skipping push")
 
