@@ -397,7 +397,7 @@ def main():
                 print(f"Failed to close discussion: {e}")
         except Exception as e:
             print(f"Failed to create issue: {e}")
-            error_reply = f"## Issue 创建失败\n\n错误: {e}\n\n---\n🤖 由 DeepSeek-V4-Flash 生成"
+            error_reply = f"## Issue 创建失败\n\n错误: {e}\n\n---\n🤖 由 AI Agent 生成"
             try:
                 reply_discussion(token, discussion_node_id, error_reply)
             except Exception:
