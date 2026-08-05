@@ -31,7 +31,7 @@ on:
       llm-model:
         description: 'LLM model for review'
         required: false
-        default: 'openai/deepseek-v4-flash'
+        default: 'openai/primary'
         type: string
       max-auto-fix-iterations:
         description: 'Max auto-fix iterations'
