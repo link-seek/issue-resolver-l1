@@ -437,7 +437,7 @@ def main():
         agent=agent,
         workspace=workspace,
         secrets=secrets,
-        max_iteration_per_run=30,
+        max_iteration_per_run=100,
     )
 
     try:
