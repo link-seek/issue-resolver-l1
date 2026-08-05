@@ -186,7 +186,7 @@ jobs:
         shell: bash
         working-directory: target-repo
         env:
-          LLM_MODEL: openai/deepseek-v4-flash
+          LLM_MODEL: openai/primary
           LLM_BASE_URL: http://localhost:4000/v1
           LLM_API_KEY: sk-litellm-proxy
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
