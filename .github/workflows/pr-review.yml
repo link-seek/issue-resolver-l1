@@ -46,7 +46,7 @@ on:
       auto-fix-workflow:
         description: 'Workflow to dispatch for auto-fix'
         required: false
-        default: 'on-comment-fix.yml'
+        default: 'on-quick-fix.yml'
         type: string
 
     secrets:
@@ -99,13 +99,11 @@ jobs:
           HEAD_SHA=$(echo "$PR_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_sha'])")
 
           echo "Dispatching auto-fix for PR #$PR_NUMBER (branch: $HEAD_BRANCH)"
-          echo "max_iterations=20 (10 original + 10 continue)"
 
           gh workflow run "$AUTO_FIX_WORKFLOW" \
             -f pr_number="$PR_NUMBER" \
             -f head_branch="$HEAD_BRANCH" \
-            -f head_sha="$HEAD_SHA" \
-            -f max_iterations="20" || echo "Failed to dispatch auto-fix"
+            -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
 
       - name: React to comment
         env:
@@ -425,6 +423,25 @@ jobs:
           CI_FAILED=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
             --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.conclusion == \"failure\")] | length" 2>/dev/null || echo "0")
 
+          # Collect CI failure details (names + annotations) for quick-fix context
+          CI_FAILURES_SUMMARY=""
+          if [ "$CI_FAILED" -gt 0 ]; then
+            FAILED_NAMES=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
+              --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.conclusion == \"failure\")] | .[].name" 2>/dev/null || echo "")
+            CI_FAILURES_SUMMARY="Failed checks: $FAILED_NAMES"
+            # Try to fetch annotations for each failed check
+            for CHECK_ID in $(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
+              --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.conclusion == \"failure\")] | .[].id" 2>/dev/null || echo ""); do
+              ANNOTATIONS=$(gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/annotations \
+                --paginate --jq '.[] | "\(.path):\(.start_line // 1) [\(.annotation_level)] \(.message)"' 2>/dev/null || echo "")
+              if [ -n "$ANNOTATIONS" ]; then
+                CI_FAILURES_SUMMARY="$CI_FAILURES_SUMMARY
+
+$ANNOTATIONS"
+              fi
+            done
+          fi
+
           echo "OCR blocking: $OCR_BLOCKING"
           echo "OCR medium: $OCR_MEDIUM"
           echo "CI failures: $CI_FAILED"
@@ -437,7 +454,7 @@ jobs:
               -f pr_number="$PR_NUMBER" \
               -f head_branch="$HEAD_BRANCH" \
               -f head_sha="$HEAD_SHA" \
-              -f max_iterations="20" || echo "Failed to dispatch auto-fix"
+              --raw-field ci_failures="$CI_FAILURES_SUMMARY" || echo "Failed to dispatch auto-fix"
             # OCR blocking makes the job fail; CI-only failures don't block the job
             if [ "$OCR_BLOCKING" -gt 0 ]; then
               echo "::error::OCR review found $OCR_BLOCKING blocking issues"
