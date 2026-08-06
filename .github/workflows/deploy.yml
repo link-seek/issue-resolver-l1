@@ -192,7 +192,7 @@ jobs:
   dispatch-l2:
     name: Dispatch L2 (flow-fix)
     needs: classify-broken
-    if: always() && needs.classify-broken.outputs.action == 'l2-try'
+    if: always() && needs.classify-broken.result == 'success' && needs.classify-broken.outputs.action == 'l2-try'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
