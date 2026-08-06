@@ -1,47 +1,41 @@
-name: Deploy Pipeline
+name: Deploy
 
-# Reusable workflow: 部署流水线骨架
-# 流程仓定义流程，消费仓定义流程活动（参数）
-#
-# 用法:
-#   uses: link-seek/issue-resolver/.github/workflows/deploy-pipeline.yml@main
-#   with:
-#     image-tag: ${{ github.event.package_version.name }}
-#     runner-label: eap-prod
-#     ghcr-image: ghcr.io/link-seek/eap-backend
-#     acr-registry: crpi-xxx.aliyuncs.com
-#     acr-namespace: eap-app
-#     acr-repo: backend
-#     frontend-url: https://www.example.com
-#     api-url: https://api.example.com
-#     issue-repo: link-seek/enterprise-architecture-platform
-#     deploy-script: /opt/eap/eap-autodeploy.sh
-#     rollback-script: scripts/deploy/rollback.sh
-#     backup-script: scripts/deploy/backup.sh
-#   secrets: inherit
+# 流程: 部署验证（pipeline family: deploy）
+# 合并 deploy-pipeline.yml + deploy-broken-handler.yml
+# 失败处理内部闭环：分类 → auto-fix 或 dispatch L2
 
 on:
   workflow_call:
     inputs:
       image-tag:
-        description: 'Image tag to deploy'
-        required: true
+        description: 'Image tag to deploy (empty = deploy-broken mode)'
+        required: false
+        default: ''
+        type: string
+      deploy-broken-issue:
+        description: 'Deploy-broken issue number (empty = normal deploy mode)'
+        required: false
+        default: ''
         type: string
       runner-label:
         description: 'Self-hosted runner label (e.g. eap-prod)'
-        required: true
+        required: false
+        default: 'eap-prod'
         type: string
       ghcr-image:
-        description: 'GHCR image path (e.g. ghcr.io/link-seek/eap-backend)'
-        required: true
+        description: 'GHCR image path'
+        required: false
+        default: 'ghcr.io/link-seek/eap-backend'
         type: string
       acr-registry:
         description: 'ACR registry URL'
-        required: true
+        required: false
+        default: 'crpi-fswclfmtgfktdkq7.cn-guangzhou.personal.cr.aliyuncs.com'
         type: string
       acr-namespace:
         description: 'ACR namespace'
-        required: true
+        required: false
+        default: 'eap-app'
         type: string
       acr-repo:
         description: 'ACR repo name'
@@ -50,42 +44,45 @@ on:
         type: string
       frontend-url:
         description: 'Frontend public URL for smoke test'
-        required: true
+        required: false
+        default: 'https://www.xieyucheng.top'
         type: string
       api-url:
         description: 'API public URL for smoke test'
-        required: true
+        required: false
+        default: 'https://api.xieyucheng.top'
         type: string
       issue-repo:
         description: 'Repo to create issue on failure (owner/repo)'
-        required: true
+        required: false
+        default: 'link-seek/enterprise-architecture-platform'
         type: string
       deploy-script:
-        description: 'Deploy script path on ECS (executed by runner)'
+        description: 'Deploy script path on ECS'
         required: false
-        default: '/opt/eap/eap-autodeploy.sh'
+        default: 'scripts/deploy/deploy.sh'
         type: string
       rollback-script:
-        description: 'Rollback script path on ECS (empty = skip)'
+        description: 'Rollback script path (empty = skip)'
         required: false
         default: ''
         type: string
       backup-script:
-        description: 'Backup script path on ECS (empty = skip)'
+        description: 'Backup script path (empty = skip)'
         required: false
         default: ''
         type: string
       consumer-repo:
         description: 'Consumer repo for checkout (owner/repo)'
         required: false
-        default: ''
+        default: 'link-seek/enterprise-architecture-platform'
         type: string
 
     secrets:
       ACR_USERNAME:
-        required: true
+        required: false
       ACR_PASSWORD:
-        required: true
+        required: false
       APP_SEED_ADMIN_EMAIL:
         required: false
       APP_SEED_ADMIN_PASSWORD:
@@ -100,15 +97,167 @@ on:
         required: false
       PAT_TOKEN:
         required: false
+      APP_ID:
+        required: false
+      APP_PRIVATE_KEY:
+        required: false
 
 permissions:
   packages: read
   contents: read
   issues: write
+  pull-requests: write
+  actions: write
 
 jobs:
+  # ═══════════════════════════════════════════════════════════
+  # 模式 1: deploy-broken issue 处理
+  # ═══════════════════════════════════════════════════════════
+  classify-broken:
+    name: Classify Deploy-Broken
+    if: inputs.deploy-broken-issue != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      category: ${{ steps.classify.outputs.category }}
+      action: ${{ steps.classify.outputs.action }}
+      add_labels: ${{ steps.classify.outputs.add_labels }}
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Classify deploy-broken issue
+        id: classify
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ inputs.deploy-broken-issue }}
+          REPO: ${{ inputs.issue-repo }}
+        run: |
+          export LABELS=$(gh issue view $ISSUE_NUMBER -R "$REPO" --json labels --jq '.labels[].name')
+
+          RULES='[
+            {"label":"error-smoke","category":"code","action":"auto-fix","add-labels":["fix-me"],"comment":"Classified as **code bug** (error-smoke) — auto-fix engaged."},
+            {"label":"error-build","category":"infrastructure","action":"l2-try","add-labels":[],"comment":"Classified as **build/flow problem** (error-build) — dispatching L2 (flow-fix mode)."},
+            {"label":"error-deploy","category":"infrastructure","action":"l2-try","add-labels":[],"comment":"Classified as **deploy/flow problem** (error-deploy) — dispatching L2 (flow-fix mode)."},
+            {"label":null,"category":"unknown","action":"l2-try","add-labels":[],"comment":"Could not classify. Dispatching L2 (flow-fix mode) to investigate."}
+          ]'
+
+          echo "$RULES" | python3 -c "
+          import sys, json, os
+
+          labels = os.environ['LABELS'].split()
+          rules = json.load(sys.stdin)
+
+          category = 'unknown'
+          add_labels = []
+          comment = ''
+          action = 'human'
+
+          for rule in rules:
+              rule_label = rule.get('label')
+              if rule_label is None or rule_label in labels:
+                  category = rule['category']
+                  add_labels = rule.get('add-labels', [])
+                  comment = rule.get('comment', '')
+                  action = rule.get('action', 'human')
+                  break
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'category={category}\n')
+              f.write(f'action={action}\n')
+              f.write(f'add_labels={\",\".join(add_labels)}\n')
+
+          with open('/tmp/comment.txt', 'w') as f:
+              f.write(comment)
+
+          print(f'Classified: {category} (action: {action})')
+          "
+
+      - name: Apply classification
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ inputs.deploy-broken-issue }}
+          REPO: ${{ inputs.issue-repo }}
+          ADD_LABELS: ${{ steps.classify.outputs.add_labels }}
+        run: |
+          if [ -n "$ADD_LABELS" ]; then
+            gh issue edit $ISSUE_NUMBER -R "$REPO" --add-label "$ADD_LABELS"
+          fi
+          gh issue comment $ISSUE_NUMBER -R "$REPO" --body-file /tmp/comment.txt
+
+  dispatch-l2:
+    name: Dispatch L2 (flow-fix)
+    needs: classify-broken
+    if: always() && needs.classify-broken.outputs.action == 'l2-try'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check PAT_TOKEN availability
+        id: check
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          if [ -n "$PAT_TOKEN" ]; then
+            echo "has_pat=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_pat=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get issue details
+        id: issue
+        if: steps.check.outputs.has_pat == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+          ISSUE_NUMBER: ${{ inputs.deploy-broken-issue }}
+          REPO: ${{ inputs.issue-repo }}
+        run: |
+          BODY=$(gh issue view $ISSUE_NUMBER -R "$REPO" --json body --jq '.body[:2000]')
+          {
+            echo "body<<ISSUE_EOF"
+            echo "$BODY"
+            echo "ISSUE_EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: Dispatch L2 capability-resolver (flow-fix mode)
+        if: steps.check.outputs.has_pat == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          FAILURE_TYPE="${{ needs.classify-broken.outputs.category }}"
+          ISSUE_BODY="${{ steps.issue.outputs.body }}"
+
+          gh api repos/link-seek/issue-resolver-l2/actions/workflows/capability-resolver.yml/dispatches \
+            -X POST \
+            -f ref=main \
+            -f "inputs[consumer-repo]=${{ inputs.issue-repo }}" \
+            -f "inputs[pr-number]=${{ inputs.deploy-broken-issue }}" \
+            -f "inputs[head-sha]=issue-${{ inputs.deploy-broken-issue }}" \
+            -f "inputs[trigger-mode]=flow-fix" \
+            -f "inputs[failure-type]=${FAILURE_TYPE}" \
+            -f "inputs[failure-context]=${ISSUE_BODY}" \
+            -f "inputs[l2-round]=1" \
+            || echo "Failed to dispatch L2"
+
+      - name: Fallback to needs-human (no PAT_TOKEN)
+        if: steps.check.outputs.has_pat == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER: ${{ inputs.deploy-broken-issue }}
+          REPO: ${{ inputs.issue-repo }}
+        run: |
+          gh issue edit $ISSUE_NUMBER -R "$REPO" --add-label "needs-human"
+          gh issue comment $ISSUE_NUMBER -R "$REPO" --body "PAT_TOKEN not available — cannot dispatch L2 automatically. Manual intervention required."
+
+  # ═══════════════════════════════════════════════════════════
+  # 模式 2: 正常部署流程
+  # ═══════════════════════════════════════════════════════════
   sync-to-acr:
-    name: Sync GHCR → ACR
+    name: Sync GHCR -> ACR
+    if: inputs.image-tag != ''
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ inputs.image-tag }}
@@ -233,7 +382,6 @@ jobs:
             exit 0
           fi
           echo "Injecting APP_JWT__SECRET into ExecStart of $SERVICE_FILE"
-          # Insert -e APP_JWT__SECRET=<value> before the last token (image:tag) on the ExecStart line
           sed -i "/^ExecStart=/ s| \([^ ][^ ]*\)$| -e APP_JWT__SECRET=${APP_JWT__SECRET} \1|" "$SERVICE_FILE"
           systemctl daemon-reload
           systemctl restart eap-backend
@@ -419,91 +567,140 @@ jobs:
           echo "=== Rolling back ==="
           ${{ inputs.rollback-script }}
 
-  create-issue:
-    name: Create Issue on Failure
+  # ═══════════════════════════════════════════════════════════
+  # 失败处理：内部闭环（不再创建 issue 再触发另一个 workflow）
+  # ═══════════════════════════════════════════════════════════
+  handle-failure:
+    name: Handle Deploy Failure
     needs: [deploy, smoke-test, rollback]
     runs-on: ubuntu-latest
-    if: always() && (needs.smoke-test.result == 'failure' || needs.deploy.result == 'failure' || needs.sync-to-acr.result == 'failure')
+    if: always() && inputs.image-tag != '' && (needs.smoke-test.result == 'failure' || needs.deploy.result == 'failure' || needs.sync-to-acr.result == 'failure')
     steps:
-      - name: Create deploy-broken issue
-        uses: actions/github-script@v7
+      - uses: actions/create-github-app-token@v1
+        id: app-token
         with:
-          github-token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-          script: |
-            const [owner, repo] = '${{ inputs.issue-repo }}'.split('/');
-            const api = github.rest;
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
 
-            const smokeResult = '${{ needs.smoke-test.result }}';
-            const deployResult = '${{ needs.deploy.result }}';
-            const syncResult = '${{ needs.sync-to-acr.result }}';
-            const rollbackResult = '${{ needs.rollback.result }}';
-            const failures = `${{ needs.smoke-test.outputs.failures }}`;
-            const deployFailure = `${{ needs.deploy.outputs.deploy-failure }}`;
-            const deployLogs = `${{ needs.deploy.outputs.deploy-logs }}`;
+      - name: Classify and resolve failure
+        id: handle-failure
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_REPO: ${{ inputs.issue-repo }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+          SMOKE_RESULT: ${{ needs.smoke-test.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          SYNC_RESULT: ${{ needs.sync-to-acr.result }}
+          ROLLBACK_RESULT: ${{ needs.rollback.result }}
+          FAILURES: ${{ needs.smoke-test.outputs.failures }}
+          DEPLOY_FAILURE: ${{ needs.deploy.outputs.deploy-failure }}
+          DEPLOY_LOGS: ${{ needs.deploy.outputs.deploy-logs }}
+          API_URL: ${{ inputs.api-url }}
+          FE_URL: ${{ inputs.frontend-url }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Determine failure type and labels
+          LABELS="deploy-broken"
+          FAILURE_TYPE="unknown"
+          FAILURE_DETAIL=""
+          ACTION="l2-try"
 
-            let labels = ['deploy-broken'];
+          if [ "$SYNC_RESULT" = "failure" ]; then
+            LABELS="$LABELS,error-deploy"
+            FAILURE_TYPE="acr-sync"
+            FAILURE_DETAIL="ACR sync (GHCR -> ACR) failed"
+          elif [ "$DEPLOY_RESULT" = "failure" ]; then
+            LABELS="$LABELS,error-deploy"
+            FAILURE_TYPE="deploy-script"
+            FAILURE_DETAIL="${DEPLOY_FAILURE:-Deploy script or health check failed}"
+          elif [ "$SMOKE_RESULT" = "failure" ]; then
+            if echo "$FAILURES" | grep -qE "Backend health|GraphQL|E2E"; then
+              LABELS="$LABELS,error-smoke"
+              ACTION="auto-fix"
+            else
+              LABELS="$LABELS,error-deploy"
+            fi
+            FAILURE_TYPE="smoke-test"
+            FAILURE_DETAIL="${FAILURES:-Smoke test failed}"
+          fi
 
-            let failureType = 'unknown';
-            let failureDetail = '';
+          # Build issue body
+          ROLLBACK_NOTE="No rollback configured. Manual intervention required."
+          if [ "$ROLLBACK_RESULT" = "success" ]; then
+            ROLLBACK_NOTE="Rollback completed. Previous version restored."
+          elif [ "$ROLLBACK_RESULT" = "failure" ]; then
+            ROLLBACK_NOTE="Rollback failed. Manual intervention required."
+            LABELS="$LABELS,critical"
+          fi
 
-            if (syncResult === 'failure') {
-              labels.push('error-deploy');
-              failureType = 'acr-sync';
-              failureDetail = 'ACR sync (GHCR → ACR) failed';
-            } else if (deployResult === 'failure') {
-              labels.push('error-deploy');
-              failureType = 'deploy-script';
-              failureDetail = deployFailure || 'Deploy script or health check failed';
-            } else if (smokeResult === 'failure') {
-              if (failures.includes('Backend health') || failures.includes('GraphQL') || failures.includes('E2E')) {
-                labels.push('error-smoke');
-              } else {
-                labels.push('error-deploy');
-              }
-              failureType = 'smoke-test';
-              failureDetail = failures || 'Smoke test failed';
-            }
+          BODY="## Deploy Failed
 
-            let body = `## Deploy Failed
+          **Image tag**: ${IMAGE_TAG}
+          **Failure type**: ${FAILURE_TYPE}
+          **Sync result**: ${SYNC_RESULT:-skipped}
+          **Deploy result**: ${DEPLOY_RESULT:-skipped}
+          **Smoke test**: ${SMOKE_RESULT:-skipped}
+          **Rollback**: ${ROLLBACK_RESULT:-skipped}
 
-            **Image tag**: ${{ inputs.image-tag }}
-            **Failure type**: ${failureType}
-            **Sync result**: ${syncResult || 'skipped'}
-            **Deploy result**: ${deployResult || 'skipped'}
-            **Smoke test**: ${smokeResult || 'skipped'}
-            **Rollback**: ${rollbackResult || 'skipped'}
+          **API URL**: ${API_URL}
+          **Frontend URL**: ${FE_URL}
 
-            **API URL**: ${{ inputs.api-url }}
-            **Frontend URL**: ${{ inputs.frontend-url }}
+          ### Failure Details
 
-            ### Failure Details
+          ${FAILURE_DETAIL}
 
-            ${failureDetail}
+          \`\`\`
+          ${FAILURES:-${DEPLOY_LOGS:-No details collected}}
+          \`\`\`
 
-            \`\`\`
-            ${failures || deployLogs || 'No details collected'}
-            \`\`\`
+          ### ${ROLLBACK_NOTE}
 
-            ### Pipeline run
-            [View run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
-            `;
+          ### Pipeline run
+          [View run](${RUN_URL})"
 
-            if (rollbackResult === 'success') {
-              body += '\n### Rollback completed\nThe previous version has been restored.';
-            } else if (rollbackResult === 'skipped') {
-              body += '\n### No rollback configured\nManual intervention required.';
-            } else {
-              body += '\n### Rollback failed or not configured\nManual intervention required.';
-              labels.push('critical');
-            }
+          # Create deploy-broken issue
+          ISSUE_NUMBER=$(gh issue create -R "$ISSUE_REPO" \
+            --title "deploy-broken: ${FAILURE_TYPE} failed (tag ${IMAGE_TAG})" \
+            --label "$LABELS" \
+            --body "$BODY" 2>/dev/null)
 
-            const sha = '${{ github.sha }}';
-            const issue = await api.issues.create({
-              owner,
-              repo,
-              title: `deploy-broken: ${failureType} failed (tag ${{ inputs.image-tag }})`,
-              body,
-              labels
-            });
+          echo "Created issue #${ISSUE_NUMBER:-unknown} in ${ISSUE_REPO}"
+          echo "issue_number=${ISSUE_NUMBER:-}" >> $GITHUB_OUTPUT
+          echo "action=${ACTION}" >> $GITHUB_OUTPUT
+          echo "failure_type=${FAILURE_TYPE}" >> $GITHUB_OUTPUT
 
-            core.info(`Created issue #${issue.data.number} in ${owner}/${repo}`);
+      - name: Auto-fix (error-smoke)
+        if: always() && steps.handle-failure.outputs.action == 'auto-fix' && steps.handle-failure.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_REPO: ${{ inputs.issue-repo }}
+          ISSUE_NUMBER: ${{ steps.handle-failure.outputs.issue_number }}
+        run: |
+          gh issue edit "$ISSUE_NUMBER" -R "$ISSUE_REPO" --add-label "fix-me"
+          gh issue comment "$ISSUE_NUMBER" -R "$ISSUE_REPO" \
+            --body "Classified as **code bug** (error-smoke) — auto-fix engaged."
+
+      - name: Dispatch L2 (error-deploy or unknown)
+        if: always() && steps.handle-failure.outputs.action == 'l2-try' && steps.handle-failure.outputs.issue_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN || steps.app-token.outputs.token }}
+          ISSUE_REPO: ${{ inputs.issue-repo }}
+          ISSUE_NUMBER: ${{ steps.handle-failure.outputs.issue_number }}
+          FAILURE_TYPE: ${{ steps.handle-failure.outputs.failure_type }}
+        run: |
+          BODY=$(gh issue view "$ISSUE_NUMBER" -R "$ISSUE_REPO" --json body --jq '.body[:2000]' 2>/dev/null || echo "")
+
+          gh api repos/link-seek/issue-resolver-l2/actions/workflows/capability-resolver.yml/dispatches \
+            -X POST \
+            -f ref=main \
+            -f "inputs[consumer-repo]=${ISSUE_REPO}" \
+            -f "inputs[pr-number]=${ISSUE_NUMBER}" \
+            -f "inputs[head-sha]=deploy-broken" \
+            -f "inputs[trigger-mode]=flow-fix" \
+            -f "inputs[failure-type]=${FAILURE_TYPE}" \
+            -f "inputs[failure-context]=${BODY}" \
+            -f "inputs[l2-round]=1" \
+            && gh issue comment "$ISSUE_NUMBER" -R "$ISSUE_REPO" \
+              --body "L2 (capability-resolver) dispatched to analyze deployment failure." \
+            || gh issue edit "$ISSUE_NUMBER" -R "$ISSUE_REPO" --add-label "needs-human"
