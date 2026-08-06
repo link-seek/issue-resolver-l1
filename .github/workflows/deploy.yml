@@ -584,6 +584,7 @@ jobs:
           owner: ${{ github.repository_owner }}
 
       - name: Classify and resolve failure
+        id: handle-failure
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_REPO: ${{ inputs.issue-repo }}
