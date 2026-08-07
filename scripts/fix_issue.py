@@ -376,8 +376,25 @@ def main():
             repo_name=repo_name, title=title, body=body, comments_text=comments_text,
         )
 
+    # Debug: check Laminar setup
+    lmnar_key = os.environ.get("LMNR_PROJECT_API_KEY")
+    print(f"[DEBUG] LMNR_PROJECT_API_KEY set: {bool(lmnar_key)}", flush=True)
+    if lmnar_key:
+        try:
+            import lmnr
+            print(f"[DEBUG] lmnr version: {lmnr.__version__}", flush=True)
+            from lmnr import Laminar
+            Laminar.initialize(project_api_key=lmnar_key)
+            print("[DEBUG] Laminar.initialize() OK", flush=True)
+        except Exception as e:
+            print(f"[DEBUG] Laminar init FAILED: {e}", flush=True)
+        try:
+            import openhands.sdk.observability.laminar as oh_laminar
+            print(f"[DEBUG] OH laminar module: {dir(oh_laminar)}", flush=True)
+        except Exception as e:
+            print(f"[DEBUG] OH laminar module import FAILED: {e}", flush=True)
+
     # Create agent
-    # Note: OpenHands SDK auto-initializes Laminar when LMNR_PROJECT_API_KEY is set
     from openhands.sdk import LLM, Agent, Conversation, get_logger
     from openhands.sdk.workspace import LocalWorkspace
     from openhands.tools.preset.default import get_default_tools
