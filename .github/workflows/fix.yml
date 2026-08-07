@@ -418,7 +418,7 @@ jobs:
       - name: Quick-fix attempt (opencode + deepseek)
         id: quick-fix
         if: |
-          (steps.context.outputs.mode == 'pr' || steps.context.outputs.mode == 'issue') &&
+          steps.context.outputs.mode == 'pr' &&
           steps.iter-check.outputs.exceeded == 'false'
         working-directory: target-repo
         env:
@@ -583,7 +583,7 @@ jobs:
 
       - name: Write fix context to file
         if: |
-          (steps.context.outputs.mode == 'pr' || steps.context.outputs.mode == 'issue') &&
+          steps.context.outputs.mode == 'pr' &&
           steps.iter-check.outputs.exceeded == 'false' &&
           steps.quick-fix.outputs.pushed != 'true'
         env:
@@ -594,7 +594,7 @@ jobs:
 
       - name: Run fix (PR mode)
         if: |
-          (steps.context.outputs.mode == 'pr' || steps.context.outputs.mode == 'issue') &&
+          steps.context.outputs.mode == 'pr' &&
           steps.iter-check.outputs.exceeded == 'false' &&
           steps.quick-fix.outputs.pushed != 'true'
         shell: bash
@@ -636,7 +636,7 @@ jobs:
 
       - name: Approve pending CI workflows (PR mode)
         if: |
-          (steps.context.outputs.mode == 'pr' || steps.context.outputs.mode == 'issue') &&
+          steps.context.outputs.mode == 'pr' &&
           steps.iter-check.outputs.exceeded == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
