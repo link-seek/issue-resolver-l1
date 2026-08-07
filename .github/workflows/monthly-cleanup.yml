@@ -38,7 +38,7 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Create cleanup issue (no fix-me label, direct execution)
+      - name: Create cleanup issue (direct execution, no label trigger)
         id: create
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
