@@ -289,10 +289,8 @@ jobs:
           docker pull "$GHCR_IMG"
 
           docker tag "$GHCR_IMG" "${ACR_IMG}:${TAG}"
-          docker tag "$GHCR_IMG" "${ACR_IMG}:latest"
           echo "Pushing to ACR ..."
           docker push "${ACR_IMG}:${TAG}"
-          docker push "${ACR_IMG}:latest"
 
       - name: Clean old ACR tags (keep latest 10)
         env:
@@ -562,7 +560,7 @@ jobs:
     name: Rollback
     needs: [deploy, smoke-test]
     runs-on: ${{ inputs.runner-label }}
-    if: always() && needs.smoke-test.result == 'failure' && inputs.rollback-script != ''
+    if: always() && (needs.smoke-test.result == 'failure' || needs.deploy.result == 'failure') && inputs.rollback-script != ''
     outputs:
       rollback-result: ${{ steps.rollback-status.outputs.result }}
     steps:
@@ -688,13 +686,20 @@ jobs:
           ### Pipeline run
           [View run](${RUN_URL})"
 
-          # Create deploy-broken issue
-          ISSUE_NUMBER=$(gh issue create -R "$ISSUE_REPO" \
-            --title "deploy-broken: ${FAILURE_TYPE} failed (tag ${IMAGE_TAG})" \
-            --label "$LABELS" \
-            --body "$BODY" 2>/dev/null)
-
-          echo "Created issue #${ISSUE_NUMBER:-unknown} in ${ISSUE_REPO}"
+          # Search for existing open deploy-broken issue (dedup)
+          EXISTING=$(gh issue list -R "$ISSUE_REPO" --label deploy-broken --state open --limit 1 --json number --jq '.[0].number // empty' 2>/dev/null)
+          if [ -n "$EXISTING" ]; then
+            echo "Found existing deploy-broken issue #$EXISTING, commenting instead of creating new"
+            gh issue comment "$EXISTING" -R "$ISSUE_REPO" --body "$BODY" 2>/dev/null
+            gh issue edit "$EXISTING" -R "$ISSUE_REPO" --add-label "$LABELS" 2>/dev/null || true
+            ISSUE_NUMBER="$EXISTING"
+          else
+            ISSUE_NUMBER=$(gh issue create -R "$ISSUE_REPO" \
+              --title "deploy-broken: ${FAILURE_TYPE} failed (tag ${IMAGE_TAG})" \
+              --label "$LABELS" \
+              --body "$BODY" 2>/dev/null)
+            echo "Created new issue #${ISSUE_NUMBER:-unknown} in ${ISSUE_REPO}"
+          fi
           echo "issue_number=${ISSUE_NUMBER:-}" >> $GITHUB_OUTPUT
           echo "action=${ACTION}" >> $GITHUB_OUTPUT
           echo "failure_type=${FAILURE_TYPE}" >> $GITHUB_OUTPUT
@@ -733,3 +738,34 @@ jobs:
             && gh issue comment "$ISSUE_NUMBER" -R "$ISSUE_REPO" \
               --body "L2 (capability-resolver) dispatched to analyze deployment failure." \
             || gh issue edit "$ISSUE_NUMBER" -R "$ISSUE_REPO" --add-label "needs-human"
+
+  handle-success:
+    name: Handle Deploy Success
+    needs: [sync-to-acr, deploy, smoke-test]
+    runs-on: ubuntu-latest
+    if: always() && inputs.image-tag != '' && needs.smoke-test.result == 'success'
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Close open deploy-broken issues
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_REPO: ${{ inputs.issue-repo }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          ISSUES=$(gh issue list -R "$ISSUE_REPO" --label deploy-broken --state open --json number --jq '.[].number' 2>/dev/null)
+          if [ -z "$ISSUES" ]; then
+            echo "No open deploy-broken issues to close"
+            exit 0
+          fi
+          for ISSUE in $ISSUES; do
+            echo "Closing deploy-broken issue #$ISSUE"
+            gh issue comment "$ISSUE" -R "$ISSUE_REPO" \
+              --body "Deploy succeeded with tag \`${IMAGE_TAG}\`. Closing this issue." 2>/dev/null
+            gh issue close "$ISSUE" -R "$ISSUE_REPO" --reason completed 2>/dev/null
+          done
