@@ -65,12 +65,12 @@ on:
       rollback-script:
         description: 'Rollback script path (empty = skip)'
         required: false
-        default: ''
+        default: 'scripts/deploy/rollback.sh'
         type: string
       backup-script:
         description: 'Backup script path (empty = skip)'
         required: false
-        default: ''
+        default: 'scripts/deploy/backup.sh'
         type: string
       consumer-repo:
         description: 'Consumer repo for checkout (owner/repo)'
@@ -321,7 +321,7 @@ jobs:
     name: Backup
     needs: sync-to-acr
     runs-on: ${{ inputs.runner-label }}
-    if: inputs.backup-script != ''
+    if: always() && needs.sync-to-acr.result == 'success' && inputs.backup-script != ''
     steps:
       - name: Run backup script
         env:
@@ -557,13 +557,31 @@ jobs:
     needs: [deploy, smoke-test]
     runs-on: ${{ inputs.runner-label }}
     if: always() && needs.smoke-test.result == 'failure' && inputs.rollback-script != ''
+    outputs:
+      rollback-result: ${{ steps.rollback-status.outputs.result }}
     steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.consumer-repo }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run rollback script
+        id: rollback-status
+        continue-on-error: true
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           echo "=== Rolling back ==="
-          ${{ inputs.rollback-script }}
+          bash ${{ inputs.rollback-script }}
+          echo "result=success" >> $GITHUB_OUTPUT
+
+      - name: Rollback failed
+        if: steps.rollback-status.outcome == 'failure'
+        run: |
+          echo "::error::Rollback failed — manual intervention required"
+          echo "result=failure" >> $GITHUB_OUTPUT
+          exit 1
 
   # ═══════════════════════════════════════════════════════════
   # 失败处理：内部闭环（不再创建 issue 再触发另一个 workflow）
@@ -591,6 +609,7 @@ jobs:
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           SYNC_RESULT: ${{ needs.sync-to-acr.result }}
           ROLLBACK_RESULT: ${{ needs.rollback.result }}
+          ROLLBACK_OUTPUT: ${{ needs.rollback.outputs.rollback-result }}
           FAILURES: ${{ needs.smoke-test.outputs.failures }}
           DEPLOY_FAILURE: ${{ needs.deploy.outputs.deploy-failure }}
           DEPLOY_LOGS: ${{ needs.deploy.outputs.deploy-logs }}
@@ -625,10 +644,16 @@ jobs:
 
           # Build issue body
           ROLLBACK_NOTE="No rollback configured. Manual intervention required."
-          if [ "$ROLLBACK_RESULT" = "success" ]; then
+          if [ "$ROLLBACK_RESULT" = "success" ] && [ "${ROLLBACK_OUTPUT:-}" = "success" ]; then
             ROLLBACK_NOTE="Rollback completed. Previous version restored."
+          elif [ "$ROLLBACK_RESULT" = "success" ] && [ "${ROLLBACK_OUTPUT:-}" = "failure" ]; then
+            ROLLBACK_NOTE="Rollback script ran but failed. Manual intervention required."
+            LABELS="$LABELS,critical"
           elif [ "$ROLLBACK_RESULT" = "failure" ]; then
             ROLLBACK_NOTE="Rollback failed. Manual intervention required."
+            LABELS="$LABELS,critical"
+          elif [ "$ROLLBACK_RESULT" = "skipped" ]; then
+            ROLLBACK_NOTE="Rollback skipped (no rollback-script configured). Manual intervention required."
             LABELS="$LABELS,critical"
           fi
 
