@@ -33,20 +33,10 @@ on:
         required: false
         default: 'openai/primary'
         type: string
-      max-auto-fix-iterations:
-        description: 'Max auto-fix iterations'
-        required: false
-        default: '10'
-        type: string
       review-timeout-minutes:
         description: 'Review timeout in minutes'
         required: false
         default: '360'
-        type: string
-      auto-fix-workflow:
-        description: 'Workflow to dispatch for auto-fix'
-        required: false
-        default: 'on-quick-fix.yml'
         type: string
 
     secrets:
@@ -65,54 +55,8 @@ permissions:
   contents: read
   pull-requests: write
   issues: write
-  actions: write
 
 jobs:
-  continue-fix:
-    if: ${{ github.event_name == 'issue_comment' && github.event.comment.body == 'continue-fix' && github.event.issue.pull_request != null && contains('OWNER,MEMBER,COLLABORATOR', github.event.comment.author_association) }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Log continue-fix trigger
-        env:
-          PR_NUMBER: ${{ github.event.issue.number }}
-          COMMENTER: ${{ github.event.comment.user.login }}
-          ASSOC: ${{ github.event.comment.author_association }}
-        run: |
-          echo "continue-fix on PR #$PR_NUMBER by $COMMENTER ($ASSOC)"
-
-      - uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-
-      - name: Get PR info and dispatch auto-fix
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
-        run: |
-          PR_INFO=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER \
-            --jq '{head_branch: .head.ref, head_sha: .head.sha}')
-          HEAD_BRANCH=$(echo "$PR_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_branch'])")
-          HEAD_SHA=$(echo "$PR_INFO" | python3 -c "import sys,json; print(json.load(sys.stdin)['head_sha'])")
-
-          echo "Dispatching auto-fix for PR #$PR_NUMBER (branch: $HEAD_BRANCH)"
-
-          gh workflow run "$AUTO_FIX_WORKFLOW" \
-            -f pr_number="$PR_NUMBER" \
-            -f head_branch="$HEAD_BRANCH" \
-            -f head_sha="$HEAD_SHA" || echo "Failed to dispatch auto-fix"
-
-      - name: React to comment
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          COMMENT_ID: ${{ github.event.comment.id }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID/reactions" \
-            -f content="rocket" 2>/dev/null || true
-
   e2e-coverage-check:
     if: ${{ github.event_name == 'pull_request' && inputs.enable-e2e-coverage-check }}
     runs-on: ubuntu-latest
@@ -286,15 +230,12 @@ jobs:
           github_token: ${{ steps.app-token.outputs.token }}
           ocr_version: '1.8.0'
 
-      - name: Wait for all gates and dispatch auto-fix if needed
+      - name: Wait for all gates and trigger auto-fix if needed
         id: verdict
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          DISPATCH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-          AUTO_FIX_WORKFLOW: ${{ inputs.auto-fix-workflow }}
         run: |
           if [ ! -f /tmp/ocr-result.json ]; then
             echo "::error::OCR result file not found"
@@ -423,47 +364,24 @@ jobs:
           CI_FAILED=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
             --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.conclusion == \"failure\")] | length" 2>/dev/null || echo "0")
 
-          # Collect CI failure details (names + annotations) for quick-fix context
-          CI_FAILURES_SUMMARY=""
-          if [ "$CI_FAILED" -gt 0 ]; then
-            FAILED_NAMES=$(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
-              --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.conclusion == \"failure\")] | .[].name" 2>/dev/null || echo "")
-            CI_FAILURES_SUMMARY="Failed checks: $FAILED_NAMES"
-            # Try to fetch annotations for each failed check
-            for CHECK_ID in $(gh api repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs \
-              --jq "[.check_runs[] | select((.name | startswith(\"pr-review\")) | not) | select(.conclusion == \"failure\")] | .[].id" 2>/dev/null || echo ""); do
-              ANNOTATIONS=$(gh api repos/$GITHUB_REPOSITORY/check-runs/$CHECK_ID/annotations \
-                --paginate --jq '.[] | "\(.path):\(.start_line // 1) [\(.annotation_level)] \(.message)"' 2>/dev/null || echo "")
-              if [ -n "$ANNOTATIONS" ]; then
-                CI_FAILURES_SUMMARY="$CI_FAILURES_SUMMARY
-
-$ANNOTATIONS"
-              fi
-            done
-          fi
-
           echo "OCR blocking: $OCR_BLOCKING"
           echo "OCR medium: $OCR_MEDIUM"
           echo "CI failures: $CI_FAILED"
 
-          # --- 5. Unified dispatch decision ---
+          # --- 5. Trigger auto-fix via @agent comment ---
           if [ "$OCR_BLOCKING" -gt 0 ] || [ "$CI_FAILED" -gt 0 ]; then
             echo "::warning::Found $OCR_BLOCKING OCR blocking + $CI_FAILED CI failures"
-            echo "Dispatching auto-fix with full context (review + CI)..."
-            GH_TOKEN="$DISPATCH_TOKEN" gh workflow run "$AUTO_FIX_WORKFLOW" \
-              -f pr_number="$PR_NUMBER" \
-              -f head_branch="$HEAD_BRANCH" \
-              -f head_sha="$HEAD_SHA" \
-              --raw-field ci_failures="$CI_FAILURES_SUMMARY" || echo "Failed to dispatch auto-fix"
-            # OCR blocking makes the job fail; CI-only failures don't block the job
+            echo "Triggering auto-fix via @agent comment..."
+            gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
+              -f body="@agent" 2>/dev/null || echo "Failed to post @agent comment"
             if [ "$OCR_BLOCKING" -gt 0 ]; then
               echo "::error::OCR review found $OCR_BLOCKING blocking issues"
               exit 1
             fi
-            echo "Auto-fix dispatched for CI failures (OCR passed)"
+            echo "Auto-fix triggered for CI failures (OCR passed)"
             exit 0
           elif [ "$OCR_MEDIUM" -gt 0 ]; then
-            echo "All gates passed with $OCR_MEDIUM medium issue(s) — not blocking. Comment 'continue-fix' to manually trigger."
+            echo "All gates passed with $OCR_MEDIUM medium issue(s) — not blocking. Comment '@agent' to manually trigger."
             exit 0
           else
             echo "All gates passed — no issues found"
