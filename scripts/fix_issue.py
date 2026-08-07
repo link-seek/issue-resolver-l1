@@ -376,6 +376,18 @@ def main():
             repo_name=repo_name, title=title, body=body, comments_text=comments_text,
         )
 
+    # Initialize Laminar tracing (if API key is available)
+    lmnar_api_key = os.environ.get("LMNR_PROJECT_API_KEY")
+    if lmnar_api_key:
+        try:
+            from lmnr import Laminar
+            Laminar.initialize(project_api_key=lmnar_api_key)
+            print("Laminar tracing initialized")
+        except Exception as e:
+            print(f"Laminar init failed (non-fatal): {e}")
+    else:
+        print("LMNR_PROJECT_API_KEY not set — Laminar tracing disabled")
+
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
     from openhands.sdk.workspace import LocalWorkspace
