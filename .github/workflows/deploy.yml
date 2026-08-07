@@ -323,17 +323,23 @@ jobs:
     runs-on: ${{ inputs.runner-label }}
     if: always() && needs.sync-to-acr.result == 'success' && inputs.backup-script != ''
     steps:
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.consumer-repo }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run backup script
         env:
           IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           echo "Running backup: ${{ inputs.backup-script }}"
-          ${{ inputs.backup-script }}
+          bash ${{ inputs.backup-script }}
 
   deploy:
     name: Deploy to ECS
     needs: [sync-to-acr, backup]
-    if: always() && needs.sync-to-acr.result == 'success'
+    if: always() && needs.sync-to-acr.result == 'success' && needs.backup.result != 'failure'
     runs-on: ${{ inputs.runner-label }}
     environment: production
     outputs:
