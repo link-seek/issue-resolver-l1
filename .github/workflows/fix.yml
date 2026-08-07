@@ -415,9 +415,80 @@ jobs:
           # anysearch (web search for L1 agent)
           pip install requests -q
 
+      - name: Quick-fix attempt (opencode + deepseek)
+        id: quick-fix
+        if: |
+          steps.context.outputs.mode == 'pr' &&
+          steps.iter-check.outputs.exceeded == 'false'
+        working-directory: target-repo
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ steps.context.outputs.target_number }}
+          HEAD_SHA: ${{ steps.context.outputs.head_sha }}
+          FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
+        run: |
+          echo "pushed=false" >> $GITHUB_OUTPUT
+          # Check quick-fix failure count
+          FAIL_COUNT=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            --paginate --jq '[.[] | select(.body | test("\\[quick-fix-fail"))] | length' 2>/dev/null || echo "0")
+          echo "Quick-fix failures so far: $FAIL_COUNT (max 5)"
+          if [ "$FAIL_COUNT" -ge 5 ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "Quick-fix failed >=5 times, proceeding to full fix (OpenHands)..."
+            exit 0
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+          # Install opencode
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+          cat > opencode.json << 'OPEOF'
+          {
+            "permission": {
+              "bash": "allow",
+              "edit": "allow",
+              "write": "allow",
+              "read": "allow"
+            }
+          }
+          OPEOF
+          echo "opencode.json" >> .gitignore
+
+          echo "Running opencode quick-fix for PR #$PR_NUMBER..."
+          opencode run \
+            --model opencode/deepseek-v4-flash-free \
+            --auto \
+            "Fix the CI test failures for PR #$PR_NUMBER in this repository.
+
+          Context:
+          $FIX_CONTEXT
+
+          Rules:
+          - Fix ONLY the reported CI failures, do not add features or refactor
+          - For Playwright strict mode violations, make selectors more specific
+          - After fixing, run: git add -A && git commit -m 'quick-fix: resolve CI failures' && git push
+          - Push to the current branch (origin HEAD)" || true
+
+          # Check if changes were pushed
+          REMOTE_SHA=$(gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER --jq '.head.sha' 2>/dev/null || echo "")
+          if [ "$REMOTE_SHA" != "$HEAD_SHA" ] && [ -n "$REMOTE_SHA" ]; then
+            echo "pushed=true" >> $GITHUB_OUTPUT
+            echo "Quick-fix pushed changes: $HEAD_SHA -> $REMOTE_SHA"
+            gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
+              -f body="✅ Quick-fix (opencode+deepseek) pushed changes. Waiting for CI..."
+          else
+            NEW_COUNT=$((FAIL_COUNT + 1))
+            gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
+              -f body="🤖 [quick-fix-fail #$NEW_COUNT] opencode+deepseek quick-fix did not succeed ($NEW_COUNT/5). Will retry or fall back to full fix."
+            echo "Quick-fix did not push changes (attempt $NEW_COUNT/5)"
+          fi
+
       - name: Setup LiteLLM proxy
         id: llm
-        if: ${{ steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false' }}
+        if: |
+          (steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false') &&
+          steps.quick-fix.outputs.pushed != 'true'
         shell: bash
         env:
           PRIMARY_KEY_1: ${{ secrets.PRIMARY_API_KEY_1 }}
@@ -511,7 +582,10 @@ jobs:
             python ../issue-resolver-scripts/scripts/fix_issue.py
 
       - name: Write fix context to file
-        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        if: |
+          steps.context.outputs.mode == 'pr' &&
+          steps.iter-check.outputs.exceeded == 'false' &&
+          steps.quick-fix.outputs.pushed != 'true'
         env:
           FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
         run: |
@@ -519,7 +593,10 @@ jobs:
           echo "Fix context written to /tmp/fix_context.txt ($(wc -c < /tmp/fix_context.txt) bytes)"
 
       - name: Run fix (PR mode)
-        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        if: |
+          steps.context.outputs.mode == 'pr' &&
+          steps.iter-check.outputs.exceeded == 'false' &&
+          steps.quick-fix.outputs.pushed != 'true'
         shell: bash
         working-directory: target-repo
         env:
@@ -540,7 +617,10 @@ jobs:
             python ../issue-resolver-scripts/scripts/fix_pr.py
 
       - name: "Guard: reject workflow file changes (L1 hard limit)"
-        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        if: |
+          steps.context.outputs.mode == 'pr' &&
+          steps.iter-check.outputs.exceeded == 'false' &&
+          steps.quick-fix.outputs.pushed != 'true'
         working-directory: target-repo
         run: |
           # L1 硬限制：不能修改消费仓的 .github/workflows/（薄壳）
@@ -555,7 +635,9 @@ jobs:
           fi
 
       - name: Approve pending CI workflows (PR mode)
-        if: ${{ steps.context.outputs.mode == 'pr' && steps.iter-check.outputs.exceeded == 'false' }}
+        if: |
+          steps.context.outputs.mode == 'pr' &&
+          steps.iter-check.outputs.exceeded == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_BRANCH: ${{ steps.context.outputs.head_branch }}
