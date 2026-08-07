@@ -2,26 +2,34 @@ name: Monthly Cleanup
 
 on:
   workflow_call:
-    inputs:
-      trigger-label:
-        description: 'Label that triggers the resolve flow'
-        required: false
-        default: 'fix-me'
-        type: string
     secrets:
       APP_ID:
         required: true
       APP_PRIVATE_KEY:
         required: true
+      LLM_API_KEY_1:
+        required: true
+      LLM_API_KEY_2:
+        required: true
+      LLM_API_KEY_3:
+        required: true
+      PAT_TOKEN:
+        required: false
+      TAVILY_API_KEY:
+        required: false
 
 permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 jobs:
   create-cleanup-issue:
     runs-on: ubuntu-latest
+    outputs:
+      issue-number: ${{ steps.create.outputs.number }}
+      skip: ${{ steps.create.outputs.skip }}
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -30,24 +38,25 @@ jobs:
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
-      - name: Create cleanup issue
+      - name: Create cleanup issue (no fix-me label, direct execution)
+        id: create
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          TRIGGER_LABEL: ${{ inputs.trigger-label }}
           REPO: ${{ github.repository }}
         run: |
           EXISTING=$(gh issue list -R "$REPO" \
-            --label "$TRIGGER_LABEL" --search "Monthly Cleanup" \
+            --search "Monthly Cleanup" \
             --state open --json number --jq 'length')
           if [ "$EXISTING" -gt 0 ]; then
             echo "Cleanup issue already open, skipping"
+            echo "skip=true" >> $GITHUB_OUTPUT
             exit 0
           fi
+          echo "skip=false" >> $GITHUB_OUTPUT
 
-          gh issue create -R "$REPO" \
+          ISSUE_URL=$(gh issue create -R "$REPO" \
             --title "Monthly Cleanup: 修复积累的 minor 问题" \
-            --label "$TRIGGER_LABEL" \
-            --body "@oh 请执行月度代码清理：
+            --body "请执行月度代码清理：
 
           1. 运行 \`cargo clippy --workspace\`，修复所有 warning
           2. 运行 \`npx eslint .\`，修复所有 warning
@@ -55,4 +64,15 @@ jobs:
           4. 检查后端 check-then-act 模式是否有竞态（应靠 DB constraint 兜底）
           5. 删除确认无用的死代码
 
-          只做安全的重构，不改功能逻辑。"
+          只做安全的重构，不改功能逻辑。")
+          ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -o '[0-9]*$')
+          echo "number=$ISSUE_NUMBER" >> $GITHUB_OUTPUT
+          echo "Created cleanup issue #$ISSUE_NUMBER"
+
+  run-cleanup:
+    needs: [create-cleanup-issue]
+    if: needs.create-cleanup-issue.outputs.skip != 'true'
+    uses: link-seek/issue-resolver-l1/.github/workflows/fix.yml@main
+    with:
+      issue-number: ${{ needs.create-cleanup-issue.outputs.issue-number }}
+    secrets: inherit
