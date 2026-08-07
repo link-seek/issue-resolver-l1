@@ -579,7 +579,7 @@ jobs:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
         run: |
-          uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml --with "lmnr[all]" \
+          uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
             python ../issue-resolver-scripts/scripts/fix_issue.py
 
       - name: Write fix context to file
@@ -615,7 +615,7 @@ jobs:
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
         run: |
-          uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml --with "lmnr[all]" \
+          uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \
             python ../issue-resolver-scripts/scripts/fix_pr.py
 
       - name: "Guard: reject workflow file changes (L1 hard limit)"
