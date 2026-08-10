@@ -63,20 +63,24 @@ def run_e2e_verification() -> dict | None:
 
     passed = 0
     failed = 0
+    import re as _re
     for line in output.splitlines():
-        if "passed" in line and ("+" in line or "passed" in line):
-            import re as _re
-            m = _re.search(r"(\d+)\s*passed", line)
-            if m:
-                passed = int(m.group(1))
-            m = _re.search(r"(\d+)\s*failed", line)
-            if m:
-                failed = int(m.group(1))
+        m = _re.search(r"(\d+)\s*passed", line)
+        if m:
+            passed = int(m.group(1))
+        m = _re.search(r"(\d+)\s*failed", line)
+        if m:
+            failed = int(m.group(1))
+
+    exit_code = result.returncode if result else -1
+    if exit_code != 0 and failed == 0 and passed > 0:
+        failed = 1
+        print("Warning: exit code non-zero but no failures parsed, setting failed=1")
 
     summary = {
         "passed": passed,
         "failed": failed,
-        "exit_code": result.returncode if result else -1,
+        "exit_code": exit_code,
         "output_tail": output[-1500:] if len(output) > 1500 else output,
     }
     print(f"E2E results: {passed} passed, {failed} failed")
