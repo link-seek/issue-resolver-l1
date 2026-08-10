@@ -498,8 +498,37 @@ def main():
     branch = f"agent/fix-{issue_type}-{issue_number}"
     subprocess.run(["git", "checkout", "-b", branch], check=True)
 
+    # Guard: revert any .github/workflows/ changes (L1 hard limit)
+    from guard import guard as guard_workflows
+    guard_workflows(
+        commit_before=commit_before,
+        repo_name=repo_name,
+        target_number=issue_number,
+        github_token=github_token,
+        gh_api_fn=gh_api,
+        is_pr=False,
+    )
+
+    # Re-check: agent may have only changed workflow files
+    status_after_guard = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True
+    ).stdout.strip()
+    diff_after_guard = subprocess.run(
+        ["git", "diff", "--name-only", commit_before, "HEAD"],
+        capture_output=True, text=True
+    ).stdout.strip()
+    has_real_committed = any(
+        f for f in diff_after_guard.splitlines()
+        if f and not f.startswith(".github/workflows/")
+    )
+    if not has_real_committed and not status_after_guard:
+        print("All changes were workflow-only, reverted by guard")
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
+               {"body": "Agent 只修改了 .github/workflows/ 文件，已被 Guard 撤回。没有代码变更需要提交。"})
+        sys.exit(0)
+
     # Commit any uncommitted changes (agent should have left files changed, not committed)
-    if has_uncommitted:
+    if status_after_guard:
         subprocess.run(["git", "add", "-A"], check=True)
         subprocess.run(["git", "commit", "-m",
                        get_template("commit_msg", issue_number=issue_number, title=title)],
