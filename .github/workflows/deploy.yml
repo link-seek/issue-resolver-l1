@@ -101,6 +101,22 @@ on:
         required: false
       APP_PRIVATE_KEY:
         required: false
+      APP_SEED_EDITOR_EMAIL:
+        required: false
+      APP_SEED_EDITOR_PASSWORD:
+        required: false
+      APP_SEED_STRANGER_EMAIL:
+        required: false
+      APP_SEED_STRANGER_PASSWORD:
+        required: false
+      E2E_EDITOR_EMAIL:
+        required: false
+      E2E_EDITOR_PASSWORD:
+        required: false
+      E2E_STRANGER_EMAIL:
+        required: false
+      E2E_STRANGER_PASSWORD:
+        required: false
 
 permissions:
   packages: read
@@ -360,6 +376,10 @@ jobs:
           ACR_REPO: ${{ inputs.acr-repo }}
           APP_SEED_ADMIN_EMAIL: ${{ secrets.APP_SEED_ADMIN_EMAIL }}
           APP_SEED_ADMIN_PASSWORD: ${{ secrets.APP_SEED_ADMIN_PASSWORD }}
+          APP_SEED_EDITOR_EMAIL: ${{ secrets.APP_SEED_EDITOR_EMAIL }}
+          APP_SEED_EDITOR_PASSWORD: ${{ secrets.APP_SEED_EDITOR_PASSWORD }}
+          APP_SEED_STRANGER_EMAIL: ${{ secrets.APP_SEED_STRANGER_EMAIL }}
+          APP_SEED_STRANGER_PASSWORD: ${{ secrets.APP_SEED_STRANGER_PASSWORD }}
           APP_JWT__SECRET: ${{ secrets.APP_JWT__SECRET }}
         run: |
           echo "=== Deploying tag: $IMAGE_TAG ==="
@@ -520,6 +540,10 @@ jobs:
           E2E_BASE_URL: ${{ inputs.frontend-url }}
           E2E_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
+          E2E_EDITOR_EMAIL: ${{ secrets.E2E_EDITOR_EMAIL }}
+          E2E_EDITOR_PASSWORD: ${{ secrets.E2E_EDITOR_PASSWORD }}
+          E2E_STRANGER_EMAIL: ${{ secrets.E2E_STRANGER_EMAIL }}
+          E2E_STRANGER_PASSWORD: ${{ secrets.E2E_STRANGER_PASSWORD }}
         run: |
           echo "Running @smoke tagged tests"
           npx playwright test --grep @smoke
