@@ -432,11 +432,17 @@ ocr review --audience agent 2>&1
         sys.exit(1)
 
     # Check if agent made changes
+    # Note: on_stop.sh hook may have already committed and pushed during agent execution.
+    # So we check both git status (uncommitted) AND commit SHA (committed by hook).
     status_after = subprocess.run(
         ["git", "status", "--porcelain"], capture_output=True, text=True
     ).stdout.strip()
+    commit_after = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    hook_pushed = commit_after != commit_before
 
-    if not status_after:
+    if not status_after and not hook_pushed:
         print("No changes detected from auto-fix")
         gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
                {"body": get_template("fix_pr_no_changes")})
@@ -459,7 +465,10 @@ ocr review --audience agent 2>&1
     status_after = subprocess.run(
         ["git", "status", "--porcelain"], capture_output=True, text=True
     ).stdout.strip()
-    if not status_after:
+    commit_after_guard = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+    if not status_after and commit_after_guard == commit_before:
         print("All changes were workflow-only, reverted by guard")
         gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
                {"body": "Agent 只修改了 .github/workflows/ 文件，已被 Guard 撤回。没有代码变更需要提交。"})
@@ -490,22 +499,26 @@ ocr review --audience agent 2>&1
     github_token = get_valid_token()
     push_url = f"https://x-access-token:{github_token}@github.com/{repo_name}.git"
 
-    subprocess.run(["git", "add", "-A"], check=True)
-    commit_msg = get_template("fix_pr_commit", iteration=iteration)
-    subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+    local_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    if status_after:
+        # There are uncommitted changes — commit and push
+        subprocess.run(["git", "add", "-A"], check=True)
+        commit_msg = get_template("fix_pr_commit", iteration=iteration)
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True)
+        local_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 
     # Check if on_stop.sh already pushed this commit
-    local_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     remote_sha = subprocess.run(
         ["git", "ls-remote", "origin", pr_branch],
         capture_output=True, text=True
     ).stdout.strip().split()[0] if pr_branch else ""
 
-    if local_sha != remote_sha:
+    if local_sha != remote_sha and status_after:
         print("on_stop.sh did not push, pushing as fallback...")
         subprocess.run(["git", "push", "--force", push_url], check=True)
     else:
-        print("on_stop.sh already pushed, skipping push")
+        print("on_stop.sh already pushed or nothing to push, skipping push")
 
     # Get commit SHA
     commit_sha = local_sha[:12]
