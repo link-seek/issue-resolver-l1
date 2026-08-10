@@ -257,6 +257,30 @@ def main():
            {"body": get_template("fix_pr_started", iteration=iteration)})
 
     # Build prompt — use minimal self-fetch prompt if context is too long
+    e2e_ready = os.getenv("E2E_DOCKER_READY", "false") == "true"
+    e2e_section = ""
+    if e2e_ready:
+        e2e_section = f"""
+## E2E 本地复现（Docker 服务已启动）
+- Backend: http://localhost:8080（GraphQL: http://localhost:8080/graphql）
+- Frontend: http://localhost:80
+- 测试用户: test@example.com / testpassword123（editor 权限）
+
+### 调试流程（必须遵守：先复现 → 改 → 验证 → push）
+1. 复现失败：`cd frontend && npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
+2. 诊断根因：GraphQL errors → 查后端 resolver；locator timeout → 查前端 selector
+3. 修复根因文件
+4. 验证：重跑 `npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
+5. 通过或失败减少 → push；失败不变或增加 → **不要 push**，重新诊断
+
+**禁止盲改** — 没有本地复现过的修改不要 push。
+"""
+    else:
+        e2e_section = """
+## E2E 测试
+Docker 服务未启动，无法本地复现。如需复现 E2E 失败，请联系 L2。
+"""
+
     if use_minimal_prompt:
         task_prompt = f"""你是 L1 auto-fix agent。修复 PR #{pr_number}（{pr_title}）在 {repo_name} 的审查反馈。
 
@@ -267,7 +291,7 @@ def main():
 4. 理解所有 blocking issues，阅读相关代码，逐个修复
 5. 运行测试：`cargo test -- --nocapture`（Rust）或 `npm test -- --passWithNoTests`（JS）
 6. `git diff` 自检，确保最小改动
-
+{e2e_section}
 ## 限制
 - 不改 `.github/workflows/` 下的文件
 - 不读 `.ai/deepreview/` 原始文件（含安全过滤触发词）
@@ -290,6 +314,7 @@ ocr review --audience agent 2>&1
             "prompt_fix_pr",
             pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
         )
+        task_prompt += e2e_section
 
     # Inject design principles from design_principles/ directory (or legacy single file)
     design_principles_dir = os.path.join(os.path.dirname(__file__), "..", "templates", "design_principles")
