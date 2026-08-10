@@ -41,16 +41,24 @@ def run_e2e_verification() -> dict | None:
     print("Running E2E verification tests...")
     print("=" * 60)
 
-    result = subprocess.run(
-        ["npx", "playwright", "test", "--grep", "@smoke|@regression", "--reporter=line"],
-        cwd=frontend_dir,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        result = subprocess.run(
+            ["npx", "playwright", "test", "--grep", "@smoke|@regression", "--reporter=line"],
+            cwd=frontend_dir,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        output = result.stdout + result.stderr
+        print(f"E2E exit code: {result.returncode}")
+    except subprocess.TimeoutExpired as e:
+        print(f"E2E tests timed out after 1800s")
+        output = str(e.stdout or "") + str(e.stderr or "")
+        result = None
+    except Exception as e:
+        print(f"E2E verification failed with error: {e}")
+        return {"passed": 0, "failed": -1, "exit_code": -1, "output_tail": str(e)[:1500]}
 
-    output = result.stdout + result.stderr
-    print(f"E2E exit code: {result.returncode}")
     print(output[-2000:] if len(output) > 2000 else output)
 
     passed = 0
@@ -68,7 +76,7 @@ def run_e2e_verification() -> dict | None:
     summary = {
         "passed": passed,
         "failed": failed,
-        "exit_code": result.returncode,
+        "exit_code": result.returncode if result else -1,
         "output_tail": output[-1500:] if len(output) > 1500 else output,
     }
     print(f"E2E results: {passed} passed, {failed} failed")
@@ -509,34 +517,35 @@ ocr review --audience agent 2>&1
     e2e_comment = ""
     final_e2e_results = None
 
-    for e2e_attempt in range(1, max_e2e_attempts + 1):
-        print(f"\n{'='*60}")
-        print(f"E2E verification attempt {e2e_attempt}/{max_e2e_attempts}")
-        print(f"{'='*60}")
+    try:
+        for e2e_attempt in range(1, max_e2e_attempts + 1):
+            print(f"\n{'='*60}")
+            print(f"E2E verification attempt {e2e_attempt}/{max_e2e_attempts}")
+            print(f"{'='*60}")
 
-        # Run E2E
-        e2e_results = run_e2e_verification()
+            # Run E2E
+            e2e_results = run_e2e_verification()
 
-        if e2e_results is None:
-            print("E2E verification skipped (no Docker services)")
-            break
-
-        final_e2e_results = e2e_results
-
-        if e2e_results["failed"] == 0 and e2e_results["passed"] > 0:
-            e2e_comment = f"\n\n✅ **E2E 验证通过**: {e2e_results['passed']} tests passed (attempt {e2e_attempt})"
-            print(f"E2E all passed on attempt {e2e_attempt}!")
-            break
-
-        # E2E still failing
-        print(f"E2E still failing: {e2e_results['passed']} passed, {e2e_results['failed']} failed")
-
-        if e2e_attempt < max_e2e_attempts:
-            # Send failures back to agent for another attempt
-            if conversation is None:
-                print("No conversation to send feedback to, skipping retry")
+            if e2e_results is None:
+                print("E2E verification skipped (no Docker services)")
                 break
-            failure_msg = f"""E2E 验证结果：{e2e_results['passed']} passed, {e2e_results['failed']} failed
+
+            final_e2e_results = e2e_results
+
+            if e2e_results["failed"] == 0 and e2e_results["passed"] > 0:
+                e2e_comment = f"\n\n✅ **E2E 验证通过**: {e2e_results['passed']} tests passed (attempt {e2e_attempt})"
+                print(f"E2E all passed on attempt {e2e_attempt}!")
+                break
+
+            # E2E still failing
+            print(f"E2E still failing: {e2e_results['passed']} passed, {e2e_results['failed']} failed")
+
+            if e2e_attempt < max_e2e_attempts:
+                # Send failures back to agent for another attempt
+                if conversation is None:
+                    print("No conversation to send feedback to, skipping retry")
+                    break
+                failure_msg = f"""E2E 验证结果：{e2e_results['passed']} passed, {e2e_results['failed']} failed
 
 失败详情（最后 1500 字符）：
 ```
@@ -551,22 +560,25 @@ ocr review --audience agent 2>&1
 3. 凭证是否匹配？测试用户是否是 space member？
 4. 跑 `cd frontend && npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50` 自己验证
 """
-            print(f"Sending E2E failures back to agent (attempt {e2e_attempt})...")
-            try:
-                conversation.send_message(failure_msg)
-                conversation.run()
-                logger.info("Agent re-run completed (E2E attempt %d)", e2e_attempt)
-            except Exception as e:
-                logger.error("Agent re-run failed: %s: %s", type(e).__name__, e)
-                display_err = redact_for_display(f"{type(e).__name__}: {e}")
-                e2e_comment = f"\n\n⚠️ **Agent 重试失败**: {display_err}"
-                break
-        else:
-            e2e_comment = (
-                f"\n\n⚠️ **E2E 仍有 {e2e_results['failed']} 个失败** (经过 {max_e2e_attempts} 次尝试)\n"
-                f"```\n{e2e_results['output_tail'][-800:]}\n```"
-            )
-            print(f"E2E still failing after {max_e2e_attempts} attempts")
+                print(f"Sending E2E failures back to agent (attempt {e2e_attempt})...")
+                try:
+                    conversation.send_message(failure_msg)
+                    conversation.run()
+                    logger.info("Agent re-run completed (E2E attempt %d)", e2e_attempt)
+                except Exception as e:
+                    logger.error("Agent re-run failed: %s: %s", type(e).__name__, e)
+                    display_err = redact_for_display(f"{type(e).__name__}: {e}")
+                    e2e_comment = f"\n\n⚠️ **Agent 重试失败**: {display_err}"
+                    break
+            else:
+                e2e_comment = (
+                    f"\n\n⚠️ **E2E 仍有 {e2e_results['failed']} 个失败** (经过 {max_e2e_attempts} 次尝试)\n"
+                    f"```\n{e2e_results['output_tail'][-800:]}\n```"
+                )
+                print(f"E2E still failing after {max_e2e_attempts} attempts")
+    except Exception as e:
+        logger.error("E2E verification loop crashed: %s: %s", type(e).__name__, e)
+        e2e_comment = f"\n\n⚠️ **E2E 验证循环异常**: {type(e).__name__}: {redact_for_display(str(e))[:200]}"
 
     # Commit and push (always, to preserve work)
     # on_stop.sh hook handles push + CI verification during agent execution.
