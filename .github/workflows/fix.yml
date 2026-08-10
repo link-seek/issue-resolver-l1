@@ -635,7 +635,8 @@ jobs:
           else
             echo "" > /tmp/e2e_failures.txt
           fi
-          FAIL_COUNT=$(grep -c "›" /tmp/e2e_failures.txt 2>/dev/null || echo "0")
+          FAIL_COUNT=$(grep -c "›" /tmp/e2e_failures.txt 2>/dev/null || true)
+          if [ -z "$FAIL_COUNT" ]; then FAIL_COUNT=0; fi
           echo "E2E failures fetched: $FAIL_COUNT tests"
           echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
           echo "---"
