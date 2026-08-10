@@ -25,6 +25,56 @@ def get_env(name: str, default: str | None = None) -> str:
     return v
 
 
+def run_e2e_verification() -> dict | None:
+    """Run E2E tests after agent finishes. Returns results dict or None if skipped."""
+    e2e_ready = os.getenv("E2E_DOCKER_READY", "false")
+    if e2e_ready != "true":
+        print("E2E Docker services not ready, skipping verification")
+        return None
+
+    frontend_dir = os.path.join(os.getcwd(), "frontend")
+    if not os.path.exists(os.path.join(frontend_dir, "package.json")):
+        print("No frontend/package.json, skipping E2E verification")
+        return None
+
+    print("=" * 60)
+    print("Running E2E verification tests...")
+    print("=" * 60)
+
+    result = subprocess.run(
+        ["npx", "playwright", "test", "--grep", "@smoke|@regression", "--reporter=line"],
+        cwd=frontend_dir,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+
+    output = result.stdout + result.stderr
+    print(f"E2E exit code: {result.returncode}")
+    print(output[-2000:] if len(output) > 2000 else output)
+
+    passed = 0
+    failed = 0
+    for line in output.splitlines():
+        if "passed" in line and ("+" in line or "passed" in line):
+            import re as _re
+            m = _re.search(r"(\d+)\s*passed", line)
+            if m:
+                passed = int(m.group(1))
+            m = _re.search(r"(\d+)\s*failed", line)
+            if m:
+                failed = int(m.group(1))
+
+    summary = {
+        "passed": passed,
+        "failed": failed,
+        "exit_code": result.returncode,
+        "output_tail": output[-1500:] if len(output) > 1500 else output,
+    }
+    print(f"E2E results: {passed} passed, {failed} failed")
+    return summary
+
+
 def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict:
     """Wrapper that auto-refreshes token on 401."""
     return _gh_api_raw(method, path, token, body)
@@ -390,6 +440,24 @@ ocr review --audience agent 2>&1
                {"body": "Agent 只修改了 .github/workflows/ 文件，已被 Guard 撤回。没有代码变更需要提交。"})
         sys.exit(0)
 
+    # E2E verification: run failing tests to check if agent's changes help
+    e2e_results = run_e2e_verification()
+    e2e_comment = ""
+    if e2e_results:
+        if e2e_results["failed"] == 0 and e2e_results["passed"] > 0:
+            e2e_comment = f"\n\n✅ **E2E 验证通过**: {e2e_results['passed']} tests passed"
+        elif e2e_results["passed"] > 0:
+            e2e_comment = (
+                f"\n\n⚠️ **E2E 验证结果**: {e2e_results['passed']} passed, "
+                f"{e2e_results['failed']} failed\n"
+                f"```\n{e2e_results['output_tail'][-800:]}\n```"
+            )
+        else:
+            e2e_comment = (
+                f"\n\n❌ **E2E 验证失败**: {e2e_results['failed']} tests failed\n"
+                f"```\n{e2e_results['output_tail'][-800:]}\n```"
+            )
+
     # Commit and push
     # on_stop.sh hook handles push + CI verification during agent execution.
     # If the hook already pushed (remote SHA matches local), skip.
@@ -418,7 +486,7 @@ ocr review --audience agent 2>&1
     commit_sha = local_sha[:12]
 
     gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
-           {"body": get_template("fix_pr_pushed", commit_sha=commit_sha)})
+           {"body": get_template("fix_pr_pushed", commit_sha=commit_sha) + e2e_comment})
 
     print(f"\n✅ Done! Pushed {commit_sha} to {pr_branch}")
 

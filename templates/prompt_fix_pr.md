@@ -212,6 +212,57 @@ curl -s http://localhost:8080/graphql -H 'Content-Type: application/json' \
    - 测试用户（如 CI 中的 seed user）是否有足够的权限
    - auth guard 是否误拒了合法请求（如 token 解析逻辑有 bug）
 
+## E2E 本地复现协议（必须遵守）
+
+**CI 环境已为你启动 Docker 服务 + Playwright，你可以且必须在本地复现 E2E 失败。**
+
+### 环境信息
+- Backend: `http://localhost:8080`（GraphQL endpoint: `http://localhost:8080/graphql`）
+- Frontend: `http://localhost:80`
+- Playwright 已安装在 `frontend/` 目录
+- 测试用户: `test@example.com` / `testpassword123`（editor 权限）
+- Stranger 用户: `stranger@test.com` / `stranger123456`
+
+### 调试流程（先复现 → 改 → 验证 → commit）
+
+1. **复现失败** — 先跑 failing tests 确认你能看到同样的错误：
+   ```bash
+   cd frontend
+   npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50
+   ```
+   如果测试全部通过，说明问题已解决，可以 push。
+   如果有失败，记录失败的测试名和错误信息。
+
+2. **诊断根因** — 根据失败类型：
+   - `GraphQL errors detected` → 查后端 resolver，用 introspection 确认 schema：
+     ```bash
+     curl -s http://localhost:8080/graphql -H 'Content-Type: application/json' \
+       -d '{"query":"{ __type(name:\"Query\") { fields { name } } }"}' | python3 -m json.tool
+     ```
+   - `locator timeout` → 查前端组件是否渲染，检查 selector 是否匹配实际 DOM
+   - `加载失败|加载中` → 查 API 是否返回数据，测试用户是否有权限
+   - `Authentication required` → 查测试用户 token 是否有效，权限是否足够
+
+3. **修复** — 只改根因文件，不要改测试断言来适配 bug
+
+4. **验证** — 重新跑 failing tests：
+   ```bash
+   cd frontend
+   npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50
+   ```
+   - 如果通过 → 可以 push
+   - 如果仍有失败但数量减少 → 可以 push，在 PR 评论说明剩余失败
+   - 如果失败数量没变或增加 → **不要 push**，重新诊断
+
+5. **禁止盲改** — 没有本地复现过的修改不要 push。如果你无法复现某个失败，
+   在 PR 评论中说明原因，不要猜测性地修改代码。
+
+### 快速只跑失败的测试
+```bash
+cd frontend
+npx playwright test --grep "@smoke|@regression" --reporter=line --last-failed 2>&1 | tail -50
+```
+
 ## E2E 测试修复
 
 当 on_stop.sh hook 报告 E2E 失败时，playwright error-context.md 包含：
