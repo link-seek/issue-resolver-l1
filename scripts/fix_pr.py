@@ -313,6 +313,11 @@ ocr review --audience agent 2>&1
     # the conversation (happens when the agent reads raw `.ai/deepreview/` files
     # that contain security-policy language). On retry we restart the conversation
     # with a stronger "redact mode" preamble.
+    # Record state before agent
+    commit_before = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
+    ).stdout.strip()
+
     max_attempts = 2
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -363,6 +368,27 @@ ocr review --audience agent 2>&1
         sys.exit(0)
 
     print(f"Changes detected:\n{status_after}")
+
+    # Guard: revert any .github/workflows/ changes (L1 hard limit)
+    from guard import guard as guard_workflows
+    guard_workflows(
+        commit_before=commit_before,
+        repo_name=repo_name,
+        target_number=pr_number,
+        github_token=github_token,
+        gh_api_fn=gh_api,
+        is_pr=True,
+    )
+
+    # Re-check: agent may have only changed workflow files
+    status_after = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True
+    ).stdout.strip()
+    if not status_after:
+        print("All changes were workflow-only, reverted by guard")
+        gh_api("POST", f"{repo_name}/issues/{pr_number}/comments", github_token,
+               {"body": "Agent 只修改了 .github/workflows/ 文件，已被 Guard 撤回。没有代码变更需要提交。"})
+        sys.exit(0)
 
     # Commit and push
     # on_stop.sh hook handles push + CI verification during agent execution.
