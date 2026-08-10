@@ -258,6 +258,34 @@ def main():
 
     # Build prompt — use minimal self-fetch prompt if context is too long
     e2e_ready = os.getenv("E2E_DOCKER_READY", "false") == "true"
+
+    # Read E2E failure details from pre-agent hook
+    e2e_failures_content = ""
+    e2e_failures_file = os.getenv("E2E_FAILURES_FILE", "")
+    if e2e_failures_file and os.path.exists(e2e_failures_file):
+        with open(e2e_failures_file) as f:
+            e2e_failures_content = f.read().strip()
+        if e2e_failures_content:
+            print(f"Read E2E failures from {e2e_failures_file} ({len(e2e_failures_content)} bytes)")
+
+    e2e_failures_block = ""
+    if e2e_failures_content:
+        e2e_failures_block = f"""## E2E 失败（blocking，必须全部修复才能提交）
+
+以下 E2E 测试失败，你必须修复：
+```
+{e2e_failures_content}
+```
+
+### 修复流程
+1. 复现：`cd frontend && npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
+2. 诊断根因：检查 `frontend/tests/helpers/auth.ts` 的默认凭证 vs `docker-compose.ci.yml` 的 seed 数据
+3. 修复根因
+4. 验证：重跑 `npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
+5. 全部通过后才允许 push
+
+"""
+
     e2e_section = ""
     if e2e_ready:
         e2e_section = f"""
@@ -284,6 +312,7 @@ Docker 服务未启动，无法本地复现。如需复现 E2E 失败，请联�
     if use_minimal_prompt:
         task_prompt = f"""你是 L1 auto-fix agent。修复 PR #{pr_number}（{pr_title}）在 {repo_name} 的审查反馈。
 
+{e2e_failures_block}
 ## 步骤
 1. 获取审查评论：`gh api repos/{repo_name}/pulls/{pr_number}/comments --paginate`
 2. 获取失败的 CI：`gh api repos/{repo_name}/commits/$(gh api repos/{repo_name}/pulls/{pr_number} --jq '.head.sha')/check-runs --jq '.check_runs[] | select(.conclusion=="failure")'`
@@ -310,7 +339,7 @@ ocr review --audience agent 2>&1
 """
         print(f"Using minimal prompt ({len(task_prompt)} bytes)")
     else:
-        task_prompt = get_template(
+        task_prompt = e2e_failures_block + get_template(
             "prompt_fix_pr",
             pr_title=pr_title, repo_name=repo_name, pr_branch=pr_branch, review_body=review_body,
         )
@@ -395,6 +424,7 @@ ocr review --audience agent 2>&1
 
     max_attempts = 2
     last_error: Exception | None = None
+    conversation = None
     for attempt in range(1, max_attempts + 1):
         conversation = Conversation(
             agent=agent,
@@ -474,25 +504,71 @@ ocr review --audience agent 2>&1
                {"body": "Agent 只修改了 .github/workflows/ 文件，已被 Guard 撤回。没有代码变更需要提交。"})
         sys.exit(0)
 
-    # E2E verification: run failing tests to check if agent's changes help
-    e2e_results = run_e2e_verification()
+    # E2E verification loop: run E2E, if fail send back to agent, max 3 attempts
+    max_e2e_attempts = 3
     e2e_comment = ""
-    if e2e_results:
+    final_e2e_results = None
+
+    for e2e_attempt in range(1, max_e2e_attempts + 1):
+        print(f"\n{'='*60}")
+        print(f"E2E verification attempt {e2e_attempt}/{max_e2e_attempts}")
+        print(f"{'='*60}")
+
+        # Run E2E
+        e2e_results = run_e2e_verification()
+
+        if e2e_results is None:
+            print("E2E verification skipped (no Docker services)")
+            break
+
+        final_e2e_results = e2e_results
+
         if e2e_results["failed"] == 0 and e2e_results["passed"] > 0:
-            e2e_comment = f"\n\n✅ **E2E 验证通过**: {e2e_results['passed']} tests passed"
-        elif e2e_results["passed"] > 0:
-            e2e_comment = (
-                f"\n\n⚠️ **E2E 验证结果**: {e2e_results['passed']} passed, "
-                f"{e2e_results['failed']} failed\n"
-                f"```\n{e2e_results['output_tail'][-800:]}\n```"
-            )
+            e2e_comment = f"\n\n✅ **E2E 验证通过**: {e2e_results['passed']} tests passed (attempt {e2e_attempt})"
+            print(f"E2E all passed on attempt {e2e_attempt}!")
+            break
+
+        # E2E still failing
+        print(f"E2E still failing: {e2e_results['passed']} passed, {e2e_results['failed']} failed")
+
+        if e2e_attempt < max_e2e_attempts:
+            # Send failures back to agent for another attempt
+            if conversation is None:
+                print("No conversation to send feedback to, skipping retry")
+                break
+            failure_msg = f"""E2E 验证结果：{e2e_results['passed']} passed, {e2e_results['failed']} failed
+
+失败详情（最后 1500 字符）：
+```
+{e2e_results['output_tail'][-1500:]}
+```
+
+你还有 {max_e2e_attempts - e2e_attempt} 次机会。请根据失败详情继续修复，然后我会再次验证。
+
+关键诊断方向：
+1. 检查 `frontend/tests/helpers/auth.ts` 的默认凭证（TEST_EMAIL, TEST_PASSWORD）
+2. 检查 `docker-compose.ci.yml` 的 seed 数据
+3. 凭证是否匹配？测试用户是否是 space member？
+4. 跑 `cd frontend && npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50` 自己验证
+"""
+            print(f"Sending E2E failures back to agent (attempt {e2e_attempt})...")
+            try:
+                conversation.send_message(failure_msg)
+                conversation.run()
+                logger.info("Agent re-run completed (E2E attempt %d)", e2e_attempt)
+            except Exception as e:
+                logger.error("Agent re-run failed: %s: %s", type(e).__name__, e)
+                display_err = redact_for_display(f"{type(e).__name__}: {e}")
+                e2e_comment = f"\n\n⚠️ **Agent 重试失败**: {display_err}"
+                break
         else:
             e2e_comment = (
-                f"\n\n❌ **E2E 验证失败**: {e2e_results['failed']} tests failed\n"
+                f"\n\n⚠️ **E2E 仍有 {e2e_results['failed']} 个失败** (经过 {max_e2e_attempts} 次尝试)\n"
                 f"```\n{e2e_results['output_tail'][-800:]}\n```"
             )
+            print(f"E2E still failing after {max_e2e_attempts} attempts")
 
-    # Commit and push
+    # Commit and push (always, to preserve work)
     # on_stop.sh hook handles push + CI verification during agent execution.
     # If the hook already pushed (remote SHA matches local), skip.
     # Otherwise, push here as fallback (e.g., issue mode without hook).
