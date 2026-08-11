@@ -621,16 +621,31 @@ jobs:
             exit 0
           fi
           echo "Found integration check run: $CHECK_RUN_ID"
-          # Download logs and extract E2E failure details
-          gh api "repos/$REPO/check-runs/$CHECK_RUN_ID/logs" > /tmp/e2e_logs.zip 2>/dev/null || true
+          # Get workflow run ID from check-run's details_url
+          # details_url format: https://github.com/{owner}/{repo}/actions/runs/{run_id}/job/{job_id}
+          DETAILS_URL=$(gh api "repos/$REPO/check-runs/$CHECK_RUN_ID" --jq '.details_url' 2>/dev/null)
+          RUN_ID=$(echo "$DETAILS_URL" | grep -oP '/runs/\K\d+' 2>/dev/null || true)
+          if [ -z "$RUN_ID" ]; then
+            # fallback: search workflow runs by head_sha
+            RUN_ID=$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&per_page=10" \
+              --jq '.workflow_runs[] | select(.name == "pr-ci") | .id' 2>/dev/null | head -1)
+          fi
+          if [ -z "$RUN_ID" ]; then
+            echo "No workflow run found, skipping"
+            echo "" > /tmp/e2e_failures.txt
+            exit 0
+          fi
+          echo "Found workflow run: $RUN_ID"
+          # Download logs via actions/runs API (check-runs/{id}/logs 404s for Actions jobs)
+          gh api "repos/$REPO/actions/runs/$RUN_ID/logs" > /tmp/e2e_logs.zip 2>/dev/null || true
           if [ -f /tmp/e2e_logs.zip ] && [ -s /tmp/e2e_logs.zip ]; then
             mkdir -p /tmp/e2e_logs_extracted
             cd /tmp/e2e_logs_extracted
             unzip -o /tmp/e2e_logs.zip 2>/dev/null || true
-            # Extract failed test lines
-            grep -h "›.*@" ./*.txt 2>/dev/null | grep -i "fail\|error\|timeout" | head -20 > /tmp/e2e_failures.txt || true
+            # Extract failed test lines (search all log files)
+            grep -rh "›.*@" ./*.txt 2>/dev/null | grep -i "fail\|error\|timeout" | head -20 > /tmp/e2e_failures.txt || true
             # Also get the summary line
-            grep -h "passed\|failed" ./*.txt 2>/dev/null | tail -5 >> /tmp/e2e_failures.txt || true
+            grep -rh "passed\|failed" ./*.txt 2>/dev/null | tail -5 >> /tmp/e2e_failures.txt || true
             cd -
           else
             echo "" > /tmp/e2e_failures.txt
@@ -651,31 +666,38 @@ jobs:
         shell: bash
         working-directory: target-repo
         run: |
-          if [ ! -f docker-compose.ci.yml ]; then
-            echo "No docker-compose.ci.yml found, skipping E2E services"
-            echo "e2e_ready=false" >> $GITHUB_OUTPUT
-            exit 0
+          if [ ! -f docker-compose.dev.yml ]; then
+            echo "No docker-compose.dev.yml found, trying docker-compose.ci.yml"
+            if [ ! -f docker-compose.ci.yml ]; then
+              echo "No docker-compose file found, skipping E2E services"
+              echo "e2e_ready=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            COMPOSE_FILE=docker-compose.ci.yml
+          else
+            COMPOSE_FILE=docker-compose.dev.yml
           fi
-          echo "Starting E2E Docker services..."
-          docker compose -f docker-compose.ci.yml up -d --build 2>&1 || true
-          # Wait for backend health
-          for i in $(seq 1 60); do
+          echo "Starting E2E services with $COMPOSE_FILE (hot-reload)..."
+          docker compose -f "$COMPOSE_FILE" up -d 2>&1 || true
+          # Wait for backend health (first cargo build may take 10+ minutes)
+          for i in $(seq 1 180); do
             if curl -sf http://localhost:8080/health 2>/dev/null; then
               echo "Backend healthy (attempt $i)"
               break
             fi
-            sleep 2
+            sleep 5
           done
           # Wait for frontend health
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:80/health 2>/dev/null; then
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:80 2>/dev/null || curl -sf http://localhost:80/health 2>/dev/null; then
               echo "Frontend healthy (attempt $i)"
               break
             fi
-            sleep 2
+            sleep 3
           done
           echo "e2e_ready=true" >> $GITHUB_OUTPUT
           echo "E2E services ready: backend=http://localhost:8080 frontend=http://localhost:80"
+          echo "compose_file=$COMPOSE_FILE" >> $GITHUB_OUTPUT
 
       - name: Install Playwright (PR mode)
         if: |
@@ -720,6 +742,7 @@ jobs:
           E2E_FRONTEND_URL: http://localhost:80
           E2E_DOCKER_READY: ${{ steps.start-e2e.outputs.e2e_ready }}
           E2E_FAILURES_FILE: /tmp/e2e_failures.txt
+          E2E_COMPOSE_FILE: ${{ steps.start-e2e.outputs.compose_file }}
           CI: "true"
         run: |
           uv run --no-project --with openhands-sdk --with openhands-tools --with cryptography --with pyyaml \

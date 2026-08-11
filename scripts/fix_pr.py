@@ -37,6 +37,27 @@ def run_e2e_verification() -> dict | None:
         print("No frontend/package.json, skipping E2E verification")
         return None
 
+    # For non-dev (ci) compose: rebuild to pick up agent's code changes
+    # For dev compose: hot-reload already applied changes, no rebuild needed
+    compose_file = os.getenv("E2E_COMPOSE_FILE", "docker-compose.ci.yml")
+    if "dev" not in compose_file:
+        print("Rebuilding Docker services with latest code...")
+        try:
+            subprocess.run(
+                ["docker", "compose", "-f", compose_file, "up", "-d", "--build"],
+                capture_output=True, text=True, timeout=600,
+            )
+            for i in range(60):
+                if subprocess.run(
+                    ["curl", "-sf", "http://localhost:8080/health"],
+                    capture_output=True,
+                ).returncode == 0:
+                    print(f"Backend healthy after rebuild (attempt {i+1})")
+                    break
+                import time; time.sleep(3)
+        except Exception as e:
+            print(f"Warning: rebuild failed ({e}), testing with existing containers")
+
     print("=" * 60)
     print("Running E2E verification tests...")
     print("=" * 60)
@@ -290,35 +311,35 @@ def main():
 ```
 
 ### 修复流程
-1. 复现：`cd frontend && npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
-2. 诊断根因：检查 `frontend/tests/helpers/auth.ts` 的默认凭证 vs `docker-compose.ci.yml` 的 seed 数据
-3. 修复根因
-4. 验证：重跑 `npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
-5. 全部通过后才允许 push
+1. 诊断根因：检查 `frontend/tests/helpers/auth.ts` 的默认凭证 vs `docker-compose.ci.yml` 的 seed 数据
+2. 修复根因
+3. 验证：`cd frontend && CI=true npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`（terminal timeout=600）
+4. 全部通过后才允许 push
 
 """
 
     e2e_section = ""
     if e2e_ready:
         e2e_section = f"""
-## E2E 本地复现（Docker 服务已启动）
+## E2E 开发环境（热部署，改代码自动生效）
 - Backend: http://localhost:8080（GraphQL: http://localhost:8080/graphql）
-- Frontend: http://localhost:80
+- Frontend: http://localhost:80（Vite HMR，改前端代码秒级生效）
+- 后端改代码后 cargo watch 自动重编译（3-5 分钟），无需手动重建
 - 测试用户: test@example.com / testpassword123（editor 权限）
 
-### 调试流程（必须遵守：先复现 → 改 → 验证 → push）
-1. 复现失败：`cd frontend && npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
-2. 诊断根因：GraphQL errors → 查后端 resolver；locator timeout → 查前端 selector
-3. 修复根因文件
-4. 验证：重跑 `npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`
-5. 通过或失败减少 → push；失败不变或增加 → **不要 push**，重新诊断
+### 开发流程（改 → 测 → 迭代）
+1. 诊断根因：GraphQL errors → 查后端 resolver；locator timeout → 查前端 selector
+2. 修复根因文件
+3. 验证：`cd frontend && CI=true npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`（terminal timeout=600）
+4. 通过或失败减少 → push；失败不变或增加 → **不要 push**，重新诊断
 
-**禁止盲改** — 没有本地复现过的修改不要 push。
+⚠️ terminal 工具只接受 `command` 和 `timeout` 参数，不要传 `summary` 等额外参数。
+**禁止盲改** — 没有本地验证过的修改不要 push。
 """
     else:
         e2e_section = """
 ## E2E 测试
-Docker 服务未启动，无法本地复现。如需复现 E2E 失败，请联系 L2。
+Docker 服务未启动，无法本地验证。如需复现 E2E 失败，请联系 L2。
 """
 
     if use_minimal_prompt:
