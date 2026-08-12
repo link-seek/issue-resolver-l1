@@ -532,14 +532,18 @@ jobs:
                 api_base: ${SECONDARY_BASE}
           EOF
           cat >> /tmp/litellm_config.yaml << 'EOF'
+          litellm_settings:
+            cache: true
+            cache_params:
+              type: local
           router_settings:
-            routing_strategy: simple-shuffle
+            routing_strategy: least-busy
             num_retries: 3
             allowed_fails: 3
             request_timeout: 120
           general_settings:
             master_key: sk-litellm-proxy
-            drop_params: true
+            drop_params: false
           EOF
 
           docker run -d --name litellm \
