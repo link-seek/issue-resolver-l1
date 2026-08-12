@@ -389,7 +389,7 @@ def main():
         "model": model,
         "api_key": api_key,
         "usage_id": "issue_resolver",
-        "drop_params": True,
+        "drop_params": False,
     }
     if base_url:
         llm_config["base_url"] = base_url
@@ -417,8 +417,8 @@ def main():
         system_prompt_kwargs={"cli_mode": True},
         condenser=LLMSummarizingCondenser(
             llm=llm.model_copy(update={"usage_id": "condenser"}),
-            max_size=80,
-            keep_first=4,
+            max_size=500,
+            keep_first=2,
             max_tokens=int(get_env("LLM_MAX_TOKENS", "180000")),
         ),
     )
