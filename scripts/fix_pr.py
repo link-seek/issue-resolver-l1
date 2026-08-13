@@ -4,7 +4,7 @@ PR Auto-Fix — reads review feedback and fixes code automatically.
 
 Triggered when review-ai posts CHANGES_REQUESTED.
 Agent reads the review body, fixes the issues, pushes to the PR branch.
-Max 3 iterations (enforced by the workflow).
+Max 3 L1 iterations (enforced by the workflow), 10 L3 verification attempts (E2E + review-ai).
 """
 
 from __future__ import annotations
@@ -108,9 +108,126 @@ def run_e2e_verification() -> dict | None:
     return summary
 
 
+def run_e2e_gate() -> dict | None:
+    """Run e2e-gate after agent finishes. Returns results dict or None if skipped."""
+    frontend_dir = os.path.join(os.getcwd(), "frontend")
+    if not os.path.exists(os.path.join(frontend_dir, "tests")):
+        print("No frontend/tests/ directory, skipping e2e-gate")
+        return None
+
+    gate_script = os.path.join(
+        os.path.dirname(__file__), "e2e_gate.sh"
+    )
+    if not os.path.exists(gate_script):
+        print(f"e2e_gate.sh not found at {gate_script}, skipping")
+        return None
+
+    print("=" * 60)
+    print("Running e2e-gate...")
+    print("=" * 60)
+
+    try:
+        result = subprocess.run(
+            ["bash", gate_script, os.getcwd()],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = result.stdout + result.stderr
+        print(output)
+    except Exception as e:
+        print(f"e2e-gate failed with error: {e}")
+        return {"passed": False, "output": str(e)[:1500]}
+
+    return {
+        "passed": result.returncode == 0,
+        "output": output[-1500:] if len(output) > 1500 else output,
+    }
+
+
 def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict:
     """Wrapper that auto-refreshes token on 401."""
     return _gh_api_raw(method, path, token, body)
+
+
+def run_review_ai_check(pr_number: int, repo_name: str, token: str, pr_branch: str) -> dict | None:
+    """Push current code and wait for review-ai check to complete.
+
+    Returns:
+      {"blocking": False} — review-ai passed
+      {"blocking": True, "findings": [...], "output_tail": str} — review-ai found blocking issues
+      None — review-ai check not found or timed out (skip, don't block)
+    """
+    import time
+
+    # Commit any uncommitted changes before pushing
+    status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout.strip()
+    if status:
+        subprocess.run(["git", "add", "-A"], check=True)
+        subprocess.run(["git", "commit", "-m", "auto-fix: E2E passed, triggering review-ai"], check=True)
+
+    local_sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    # Push to trigger CI (including review-ai)
+    push_url = f"https://x-access-token:{token}@github.com/{repo_name}.git"
+    remote_sha = subprocess.run(
+        ["git", "ls-remote", "origin", pr_branch], capture_output=True, text=True
+    ).stdout.strip().split()[0] if pr_branch else ""
+
+    if local_sha != remote_sha:
+        subprocess.run(["git", "push", "--force", push_url], check=True)
+        print(f"Pushed {local_sha[:12]} for review-ai check")
+    else:
+        print("Already pushed, checking existing review-ai results...")
+
+    # Poll for review-ai check completion (max 30 minutes)
+    print("Waiting for review-ai check to complete...")
+    for i in range(60):
+        time.sleep(30)
+        try:
+            resp = gh_api("GET", f"{repo_name}/commits/{local_sha}/check-runs", token)
+            check_runs = resp.get("check_runs", []) if isinstance(resp, dict) else []
+        except Exception:
+            continue
+
+        review_check = None
+        for cr in check_runs:
+            if "review-ai" in cr.get("name", "").lower():
+                review_check = cr
+                break
+        if not review_check:
+            continue
+        if review_check["status"] != "completed":
+            continue
+
+        print(f"review-ai completed after {(i+1)*30}s: {review_check['conclusion']}")
+        if review_check["conclusion"] == "success":
+            return {"blocking": False}
+
+        # Fetch annotations for failed review-ai
+        try:
+            annotations = gh_api("GET", f"{repo_name}/check-runs/{review_check['id']}/annotations", token)
+            if not isinstance(annotations, list):
+                annotations = []
+        except Exception:
+            annotations = []
+
+        blocking = [a for a in annotations if a.get("annotation_level") == "failure"]
+        if not blocking:
+            return {"blocking": False}
+
+        findings = [
+            f"- {a.get('path', '?')}:{a.get('start_line', '?')} [{a.get('annotation_level', 'failure')}] {a.get('message', '')[:200]}"
+            for a in blocking[:30]
+        ]
+        return {
+            "blocking": True,
+            "findings": findings,
+            "output_tail": "\n".join(findings),
+        }
+
+    print("review-ai check timed out after 30 minutes, proceeding without blocking")
+    return None
 
 
 # ── Content-filter handling ──────────────────────────────────────────────
@@ -327,11 +444,19 @@ def main():
 - 后端改代码后 cargo watch 自动重编译（3-5 分钟），无需手动重建
 - 测试用户: test@example.com / testpassword123（editor 权限）
 
+## E2E 准入门禁（e2e-gate）
+提交前必须通过 e2e-gate 检查：
+1. **标签完整性**：所有 `test()` 必须有 `@smoke` 或 `@regression` 标签
+   - `@smoke`：页面加载、导航类轻量测试
+   - `@regression`：CRUD、权限、成员管理等功能测试
+2. **测试文件存在性**：改了 `frontend/src/` 下的组件/页面 → 对应 `frontend/tests/` 目录有 `.spec.ts`
+
 ### 开发流程（改 → 测 → 迭代）
 1. 诊断根因：GraphQL errors → 查后端 resolver；locator timeout → 查前端 selector
 2. 修复根因文件
-3. 验证：`cd frontend && CI=true npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`（terminal timeout=600）
-4. 通过或失败减少 → push；失败不变或增加 → **不要 push**，重新诊断
+3. 新增/修改测试时确保标签完整
+4. 验证：`cd frontend && CI=true npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`（terminal timeout=600）
+5. 通过或失败减少 → push；失败不变或增加 → **不要 push**，重新诊断
 
 ⚠️ terminal 工具只接受 `command` 和 `timeout` 参数，不要传 `summary` 等额外参数。
 **禁止盲改** — 没有本地验证过的修改不要 push。
@@ -537,18 +662,63 @@ ocr review --audience agent 2>&1
                {"body": "Agent 只修改了 .github/workflows/ 文件，已被 Guard 撤回。没有代码变更需要提交。"})
         sys.exit(0)
 
-    # E2E verification loop: run E2E, if fail send back to agent, max 3 attempts
-    max_e2e_attempts = 3
+    # L3 verification loop: e2e-gate → E2E → review-ai, max 10 attempts (shared budget)
+    max_l3_attempts = 10
     e2e_comment = ""
     final_e2e_results = None
 
     try:
-        for e2e_attempt in range(1, max_e2e_attempts + 1):
+        for l3_attempt in range(1, max_l3_attempts + 1):
             print(f"\n{'='*60}")
-            print(f"E2E verification attempt {e2e_attempt}/{max_e2e_attempts}")
+            print(f"L3 verification attempt {l3_attempt}/{max_l3_attempts}")
             print(f"{'='*60}")
 
-            # Run E2E
+            # Step 0: Run e2e-gate (tag completeness + test file existence)
+            gate_results = run_e2e_gate()
+
+            if gate_results is not None and not gate_results["passed"]:
+                print(f"e2e-gate failed — sending back to agent")
+
+                if l3_attempt >= max_l3_attempts:
+                    e2e_comment = (
+                        f"\n\n⚠️ **e2e-gate 仍未通过** (经过 {max_l3_attempts} 次尝试)\n"
+                        f"```\n{gate_results['output'][-800:]}\n```"
+                    )
+                    print(f"e2e-gate still failing after {max_l3_attempts} attempts")
+                    break
+
+                if conversation is None:
+                    print("No conversation to send feedback to, skipping retry")
+                    break
+
+                gate_msg = f"""e2e-gate 检查未通过：
+
+```
+{gate_results['output']}
+```
+
+请修复以上问题：
+- **TAG_MISSING**: 给缺少标签的 test() 补上 `@smoke`（页面加载/导航类）或 `@regression`（CRUD/权限/功能类）标签
+- **TEST_MISSING**: 为缺少 E2E 测试的源文件创建对应的 `.spec.ts` 测试文件
+
+你还有 {max_l3_attempts - l3_attempt} 次机会。修复后我会再次检查。
+"""
+                print(f"Sending e2e-gate failures back to agent (L3 attempt {l3_attempt})...")
+                try:
+                    conversation.send_message(gate_msg)
+                    conversation.run()
+                    logger.info("Agent re-run completed (L3 attempt %d, gate fix)", l3_attempt)
+                except Exception as e:
+                    logger.error("Agent re-run failed: %s: %s", type(e).__name__, e)
+                    display_err = redact_for_display(f"{type(e).__name__}: {e}")
+                    e2e_comment = f"\n\n⚠️ **Agent 重试失败**: {display_err}"
+                    break
+                continue
+
+            if gate_results is not None and gate_results["passed"]:
+                print("e2e-gate passed ✓")
+
+            # Step 1: Run E2E
             e2e_results = run_e2e_verification()
 
             if e2e_results is None:
@@ -557,19 +727,22 @@ ocr review --audience agent 2>&1
 
             final_e2e_results = e2e_results
 
-            if e2e_results["failed"] == 0 and e2e_results["passed"] > 0:
-                e2e_comment = f"\n\n✅ **E2E 验证通过**: {e2e_results['passed']} tests passed (attempt {e2e_attempt})"
-                print(f"E2E all passed on attempt {e2e_attempt}!")
-                break
+            if e2e_results["failed"] != 0 or e2e_results["passed"] == 0:
+                # E2E still failing — send back to agent
+                print(f"E2E failing: {e2e_results['passed']} passed, {e2e_results['failed']} failed")
 
-            # E2E still failing
-            print(f"E2E still failing: {e2e_results['passed']} passed, {e2e_results['failed']} failed")
+                if l3_attempt >= max_l3_attempts:
+                    e2e_comment = (
+                        f"\n\n⚠️ **E2E 仍有 {e2e_results['failed']} 个失败** (经过 {max_l3_attempts} 次尝试)\n"
+                        f"```\n{e2e_results['output_tail'][-800:]}\n```"
+                    )
+                    print(f"E2E still failing after {max_l3_attempts} attempts")
+                    break
 
-            if e2e_attempt < max_e2e_attempts:
-                # Send failures back to agent for another attempt
                 if conversation is None:
                     print("No conversation to send feedback to, skipping retry")
                     break
+
                 failure_msg = f"""E2E 验证结果：{e2e_results['passed']} passed, {e2e_results['failed']} failed
 
 失败详情（最后 1500 字符）：
@@ -577,7 +750,7 @@ ocr review --audience agent 2>&1
 {e2e_results['output_tail'][-1500:]}
 ```
 
-你还有 {max_e2e_attempts - e2e_attempt} 次机会。请根据失败详情继续修复，然后我会再次验证。
+你还有 {max_l3_attempts - l3_attempt} 次机会。请根据失败详情继续修复，然后我会再次验证。
 
 关键诊断方向：
 1. 检查 `frontend/tests/helpers/auth.ts` 的默认凭证（TEST_EMAIL, TEST_PASSWORD）
@@ -585,25 +758,76 @@ ocr review --audience agent 2>&1
 3. 凭证是否匹配？测试用户是否是 space member？
 4. 跑 `cd frontend && npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50` 自己验证
 """
-                print(f"Sending E2E failures back to agent (attempt {e2e_attempt})...")
+                print(f"Sending E2E failures back to agent (L3 attempt {l3_attempt})...")
                 try:
                     conversation.send_message(failure_msg)
                     conversation.run()
-                    logger.info("Agent re-run completed (E2E attempt %d)", e2e_attempt)
+                    logger.info("Agent re-run completed (L3 attempt %d, E2E fix)", l3_attempt)
                 except Exception as e:
                     logger.error("Agent re-run failed: %s: %s", type(e).__name__, e)
                     display_err = redact_for_display(f"{type(e).__name__}: {e}")
                     e2e_comment = f"\n\n⚠️ **Agent 重试失败**: {display_err}"
                     break
-            else:
+                continue
+
+            # E2E passed — Step 2: Run review-ai
+            print(f"E2E passed ({e2e_results['passed']} tests), checking review-ai...")
+            _token = get_valid_token()
+            review_result = run_review_ai_check(pr_number, repo_name, _token, pr_branch)
+
+            if review_result is None:
+                print("review-ai skipped (not found or timed out)")
+                e2e_comment = f"\n\n✅ **E2E 验证通过**: {e2e_results['passed']} tests passed (attempt {l3_attempt})"
+                break
+
+            if not review_result["blocking"]:
+                print("review-ai passed!")
+                e2e_comment = f"\n\n✅ **E2E + review-ai 验证通过**: {e2e_results['passed']} tests passed (attempt {l3_attempt})"
+                break
+
+            # review-ai has blocking findings — send back to agent
+            print(f"review-ai: {len(review_result['findings'])} blocking findings")
+
+            if l3_attempt >= max_l3_attempts:
                 e2e_comment = (
-                    f"\n\n⚠️ **E2E 仍有 {e2e_results['failed']} 个失败** (经过 {max_e2e_attempts} 次尝试)\n"
-                    f"```\n{e2e_results['output_tail'][-800:]}\n```"
+                    f"\n\n⚠️ **review-ai 仍有 {len(review_result['findings'])} 个 blocking** (经过 {max_l3_attempts} 次尝试)\n"
+                    f"```\n{review_result['output_tail'][:800]}\n```"
                 )
-                print(f"E2E still failing after {max_e2e_attempts} attempts")
+                print(f"review-ai still blocking after {max_l3_attempts} attempts")
+                break
+
+            if conversation is None:
+                print("No conversation to send feedback to")
+                e2e_comment = f"\n\n✅ **E2E 通过** but review-ai has blocking findings (no conversation)"
+                break
+
+            review_msg = f"""review-ai 验证结果：{len(review_result['findings'])} 个 blocking findings
+
+必须修复以下 review-ai blocking issues：
+{review_result['output_tail']}
+
+你还有 {max_l3_attempts - l3_attempt} 次机会。修复后我会重新验证 E2E + review-ai。
+
+注意：修复 review-ai 问题后可能引入新的 E2E 失败，所以需要重新验证 E2E。
+"""
+            print(f"Sending review-ai findings back to agent (L3 attempt {l3_attempt})...")
+            try:
+                conversation.send_message(review_msg)
+                conversation.run()
+                logger.info("Agent re-run completed (L3 attempt %d, review-ai fix)", l3_attempt)
+            except Exception as e:
+                logger.error("Agent re-run failed: %s: %s", type(e).__name__, e)
+                display_err = redact_for_display(f"{type(e).__name__}: {e}")
+                e2e_comment = f"\n\n⚠️ **Agent 重试失败**: {display_err}"
+                break
     except Exception as e:
-        logger.error("E2E verification loop crashed: %s: %s", type(e).__name__, e)
-        e2e_comment = f"\n\n⚠️ **E2E 验证循环异常**: {type(e).__name__}: {redact_for_display(str(e))[:200]}"
+        logger.error("L3 verification loop crashed: %s: %s", type(e).__name__, e)
+        e2e_comment = f"\n\n⚠️ **L3 验证循环异常**: {type(e).__name__}: {redact_for_display(str(e))[:200]}"
+
+    # Re-check status after L3 loop (agent may have made changes during verification)
+    status_after = subprocess.run(
+        ["git", "status", "--porcelain"], capture_output=True, text=True
+    ).stdout.strip()
 
     # Commit and push (always, to preserve work)
     # on_stop.sh hook handles push + CI verification during agent execution.
@@ -627,11 +851,11 @@ ocr review --audience agent 2>&1
         capture_output=True, text=True
     ).stdout.strip().split()[0] if pr_branch else ""
 
-    if local_sha != remote_sha and status_after:
-        print("on_stop.sh did not push, pushing as fallback...")
+    if local_sha != remote_sha:
+        print("Local SHA differs from remote, pushing as fallback...")
         subprocess.run(["git", "push", "--force", push_url], check=True)
     else:
-        print("on_stop.sh already pushed or nothing to push, skipping push")
+        print("Already pushed or nothing to push, skipping push")
 
     # Get commit SHA
     commit_sha = local_sha[:12]

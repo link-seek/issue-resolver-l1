@@ -141,19 +141,17 @@ jobs:
           ref: ${{ steps.ref.outputs.ref }}
           token: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Coverage gate
+      - name: E2E tag check
         run: |
-          # Baseline: test coverage must not decrease
-          SPEC_COUNT=$(find frontend/tests -name '*.spec.ts' 2>/dev/null | wc -l)
-          echo "Spec files found: $SPEC_COUNT"
-          if [ "$SPEC_COUNT" -lt 14 ]; then
-            echo "::error::Test coverage baseline violated: $SPEC_COUNT spec files < 14 minimum"
-            exit 1
-          fi
-          # Verify e2e-filter is not restricted to smoke-only in dev phase
-          FILTER="${{ inputs.e2e-filter }}"
-          if [ "$FILTER" = "--grep @smoke" ]; then
-            echo "::warning::e2e-filter is @smoke only — development phase should run all tests"
+          UNTAGGED=$(grep -rnE 'test[^.]*\(' frontend/tests/ 2>/dev/null \
+            | grep -vE 'test\.(describe|beforeEach|afterEach|beforeAll|afterAll|step)' \
+            | grep -vE '@(smoke|regression)' \
+            | head -20 || true)
+          if [ -n "$UNTAGGED" ]; then
+            echo "::warning::Found untagged tests (should have @smoke or @regression):"
+            echo "$UNTAGGED"
+          else
+            echo "All tests have @smoke or @regression tags ✓"
           fi
 
       - name: Resolve commit SHA

@@ -46,6 +46,12 @@
 - **绝对不要修改流程仓（issue-resolver）的任何文件**
   - 那是 L2 的职责，你的改动会被覆盖
 
+## E2E 测试规范
+- 所有 `test()` 必须有 `@smoke` 或 `@regression` 标签
+  - `@smoke`：页面加载、导航类轻量测试
+  - `@regression`：CRUD、权限、成员管理等功能测试
+- 改了 `frontend/src/` 下的组件/页面 → 对应 `frontend/tests/` 目录要有 `.spec.ts`
+
 ## 重要
 - **不要运行任何 git 命令** — 直接创建/修改文件
 - 做最小、聚焦的改动
