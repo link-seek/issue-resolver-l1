@@ -3,7 +3,6 @@
 
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -149,7 +148,7 @@ def parse_issue_response(response: str) -> tuple:
             title = line[len("ISSUE_TITLE:"):].strip()
         elif line.startswith("ISSUE_LABELS:"):
             labels_str = line[len("ISSUE_LABELS:"):].strip()
-            labels = [l.strip() for l in labels_str.split(",") if l.strip()]
+            labels = [lbl.strip() for lbl in labels_str.split(",") if lbl.strip()]
             body_start = i + 1
             break
 

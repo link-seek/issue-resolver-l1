@@ -54,7 +54,8 @@ def run_e2e_verification() -> dict | None:
                 ).returncode == 0:
                     print(f"Backend healthy after rebuild (attempt {i+1})")
                     break
-                import time; time.sleep(3)
+                import time
+                time.sleep(3)
         except Exception as e:
             print(f"Warning: rebuild failed ({e}), testing with existing containers")
 
@@ -73,7 +74,7 @@ def run_e2e_verification() -> dict | None:
         output = result.stdout + result.stderr
         print(f"E2E exit code: {result.returncode}")
     except subprocess.TimeoutExpired as e:
-        print(f"E2E tests timed out after 1800s")
+        print("E2E tests timed out after 1800s")
         output = str(e.stdout or "") + str(e.stderr or "")
         result = None
     except Exception as e:
@@ -437,7 +438,7 @@ def main():
 
     e2e_section = ""
     if e2e_ready:
-        e2e_section = f"""
+        e2e_section = """
 ## E2E 开发环境（热部署，改代码自动生效）
 - Backend: http://localhost:8080（GraphQL: http://localhost:8080/graphql）
 - Frontend: http://localhost:80（Vite HMR，改前端代码秒级生效）
@@ -517,7 +518,7 @@ ocr review --audience agent 2>&1
             dp_parts.append(f.read().strip())
     if dp_parts:
         dp = "\n\n".join(dp_parts)
-        principle_lines = [l for l in dp.splitlines() if l.strip().startswith("-")]
+        principle_lines = [line for line in dp.splitlines() if line.strip().startswith("-")]
         if principle_lines:
             task_prompt += f"\n\n{dp}"
             print(f"Injected design principles ({len(dp)} bytes, {len(principle_lines)} principles)")
@@ -665,7 +666,6 @@ ocr review --audience agent 2>&1
     # L3 verification loop: e2e-gate → E2E → review-ai, max 10 attempts (shared budget)
     max_l3_attempts = 10
     e2e_comment = ""
-    final_e2e_results = None
 
     try:
         for l3_attempt in range(1, max_l3_attempts + 1):
@@ -677,7 +677,7 @@ ocr review --audience agent 2>&1
             gate_results = run_e2e_gate()
 
             if gate_results is not None and not gate_results["passed"]:
-                print(f"e2e-gate failed — sending back to agent")
+                print("e2e-gate failed — sending back to agent")
 
                 if l3_attempt >= max_l3_attempts:
                     e2e_comment = (
@@ -724,8 +724,6 @@ ocr review --audience agent 2>&1
             if e2e_results is None:
                 print("E2E verification skipped (no Docker services)")
                 break
-
-            final_e2e_results = e2e_results
 
             if e2e_results["failed"] != 0 or e2e_results["passed"] == 0:
                 # E2E still failing — send back to agent
@@ -798,7 +796,7 @@ ocr review --audience agent 2>&1
 
             if conversation is None:
                 print("No conversation to send feedback to")
-                e2e_comment = f"\n\n✅ **E2E 通过** but review-ai has blocking findings (no conversation)"
+                e2e_comment = "\n\n✅ **E2E 通过** but review-ai has blocking findings (no conversation)"
                 break
 
             review_msg = f"""review-ai 验证结果：{len(review_result['findings'])} 个 blocking findings
