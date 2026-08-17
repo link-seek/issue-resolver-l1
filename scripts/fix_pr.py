@@ -188,7 +188,8 @@ def run_review_ai_check(pr_number: int, repo_name: str, token: str, pr_branch: s
         try:
             resp = gh_api("GET", f"{repo_name}/commits/{local_sha}/check-runs", token)
             check_runs = resp.get("check_runs", []) if isinstance(resp, dict) else []
-        except Exception:
+        except Exception as e:
+            print(f"Warning: failed to get check-runs for {local_sha}: {e}")
             continue
 
         review_check = None

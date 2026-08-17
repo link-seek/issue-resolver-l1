@@ -399,8 +399,8 @@ def main():
             error_reply = f"## Issue 创建失败\n\n错误: {e}\n\n---\n🤖 由 AI Agent 生成"
             try:
                 reply_discussion(token, discussion_node_id, error_reply)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Failed to reply discussion error: {e}")
     else:
         reply_body = get_template("discussion_reply", llm_response=llm_response)
 
