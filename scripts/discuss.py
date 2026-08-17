@@ -3,7 +3,6 @@
 
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -149,7 +148,7 @@ def parse_issue_response(response: str) -> tuple:
             title = line[len("ISSUE_TITLE:"):].strip()
         elif line.startswith("ISSUE_LABELS:"):
             labels_str = line[len("ISSUE_LABELS:"):].strip()
-            labels = [l.strip() for l in labels_str.split(",") if l.strip()]
+            labels = [lbl.strip() for lbl in labels_str.split(",") if lbl.strip()]
             body_start = i + 1
             break
 
@@ -400,8 +399,8 @@ def main():
             error_reply = f"## Issue 创建失败\n\n错误: {e}\n\n---\n🤖 由 AI Agent 生成"
             try:
                 reply_discussion(token, discussion_node_id, error_reply)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Failed to reply discussion error: {e}")
     else:
         reply_body = get_template("discussion_reply", llm_response=llm_response)
 
