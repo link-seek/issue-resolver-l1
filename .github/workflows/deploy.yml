@@ -77,6 +77,16 @@ on:
         required: false
         default: 'link-seek/enterprise-architecture-platform'
         type: string
+      oss-bucket:
+        description: 'OSS bucket for frontend (empty = skip frontend rollback)'
+        required: false
+        default: 'eap-frontend-xyc'
+        type: string
+      oss-region:
+        description: 'OSS region endpoint'
+        required: false
+        default: 'oss-cn-shenzhen.aliyuncs.com'
+        type: string
 
     secrets:
       ACR_USERNAME:
@@ -116,6 +126,10 @@ on:
       E2E_STRANGER_EMAIL:
         required: false
       E2E_STRANGER_PASSWORD:
+        required: false
+      ALIYUN_ACCESS_KEY_ID:
+        required: false
+      ALIYUN_ACCESS_KEY_SECRET:
         required: false
 
 permissions:
@@ -611,12 +625,115 @@ jobs:
           echo "result=failure" >> $GITHUB_OUTPUT
           exit 1
 
+  rollback-frontend:
+    name: Rollback Frontend (OSS)
+    needs: rollback
+    runs-on: ubuntu-latest
+    if: always() && needs.rollback.result == 'success' && inputs.oss-bucket != ''
+    timeout-minutes: 5
+    outputs:
+      rollback-result: ${{ steps.frontend-rollback.outputs.result }}
+    steps:
+      - name: Install oss2 SDK
+        run: pip install oss2
+
+      - name: Rollback frontend to previous OSS version
+        id: frontend-rollback
+        continue-on-error: true
+        env:
+          OSS_BUCKET: ${{ inputs.oss-bucket }}
+          OSS_REGION: ${{ inputs.oss-region }}
+          AK_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          AK_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+        run: |
+          python3 << 'PYEOF'
+          import oss2, os, sys
+
+          bucket_name = os.environ['OSS_BUCKET']
+          region      = os.environ['OSS_REGION']
+          ak_id       = os.environ['AK_ID']
+          ak_secret   = os.environ['AK_SECRET']
+
+          endpoint = f'https://{bucket_name}.{region}'
+          auth     = oss2.Auth(ak_id, ak_secret)
+          bucket   = oss2.Bucket(auth, endpoint, bucket_name)
+
+          key_versions = {}
+          result = bucket.list_object_versions()
+          while True:
+              for ov in result.object_versions:
+                  key_versions.setdefault(ov.key, []).append({
+                      'version_id': ov.versionid,
+                      'is_latest': ov.is_latest,
+                      'last_modified': ov.last_modified,
+                      'is_delete_marker': False,
+                      'size': ov.size,
+                  })
+              for dm in result.delete_marker_versions:
+                  key_versions.setdefault(dm.key, []).append({
+                      'version_id': dm.versionid,
+                      'is_latest': dm.is_latest,
+                      'last_modified': dm.last_modified,
+                      'is_delete_marker': True,
+                      'size': 0,
+                  })
+              if result.is_truncated:
+                  result = bucket.list_object_versions(
+                      key_marker=result.next_key_marker,
+                      version_id_marker=result.next_version_id_marker,
+                  )
+              else:
+                  break
+
+          print(f'Found {len(key_versions)} unique keys with versions')
+
+          restored = 0
+          deleted  = 0
+          skipped  = 0
+
+          for key, versions in sorted(key_versions.items()):
+              versions.sort(key=lambda v: v['last_modified'], reverse=True)
+
+              if len(versions) < 2:
+                  if not versions[0]['is_delete_marker']:
+                      bucket.delete_object(key)
+                      print(f'Deleted new file: {key}')
+                      deleted += 1
+                  else:
+                      skipped += 1
+                  continue
+
+              previous = versions[1]
+              if previous['is_delete_marker']:
+                  bucket.delete_object(key)
+                  print(f'Deleted newly-added file: {key}')
+                  deleted += 1
+                  continue
+
+              bucket.copy_object(bucket_name, key, key,
+                                  params={'versionId': previous['version_id']})
+              print(f"Restored {key} -> version {previous['version_id']}")
+              restored += 1
+
+          print(f'\nSummary: {restored} restored, {deleted} deleted, {skipped} skipped')
+          if restored == 0 and deleted == 0:
+              print('WARNING: no files were restored or deleted')
+          PYEOF
+          echo "result=success" >> $GITHUB_OUTPUT
+
+      - name: Frontend rollback failed
+        if: steps.frontend-rollback.outcome == 'failure'
+        run: |
+          echo "::error::Frontend rollback failed — manual intervention required"
+          echo "result=failure" >> $GITHUB_OUTPUT
+          exit 1
+
   # ═══════════════════════════════════════════════════════════
   # 失败处理：内部闭环（不再创建 issue 再触发另一个 workflow）
   # ═══════════════════════════════════════════════════════════
   handle-failure:
     name: Handle Deploy Failure
-    needs: [deploy, smoke-test, rollback]
+    needs: [deploy, smoke-test, rollback, rollback-frontend]
     runs-on: ubuntu-latest
     if: always() && inputs.image-tag != '' && (needs.smoke-test.result == 'failure' || needs.deploy.result == 'failure' || needs.sync-to-acr.result == 'failure')
     steps:
@@ -638,6 +755,8 @@ jobs:
           SYNC_RESULT: ${{ needs.sync-to-acr.result }}
           ROLLBACK_RESULT: ${{ needs.rollback.result }}
           ROLLBACK_OUTPUT: ${{ needs.rollback.outputs.rollback-result }}
+          FE_ROLLBACK_RESULT: ${{ needs.rollback-frontend.result }}
+          FE_ROLLBACK_OUTPUT: ${{ needs.rollback-frontend.outputs.rollback-result }}
           FAILURES: ${{ needs.smoke-test.outputs.failures }}
           DEPLOY_FAILURE: ${{ needs.deploy.outputs.deploy-failure }}
           DEPLOY_LOGS: ${{ needs.deploy.outputs.deploy-logs }}
@@ -685,6 +804,19 @@ jobs:
             LABELS="$LABELS,critical"
           fi
 
+          FE_ROLLBACK_NOTE="No frontend rollback info."
+          if [ "${FE_ROLLBACK_RESULT:-}" = "success" ] && [ "${FE_ROLLBACK_OUTPUT:-}" = "success" ]; then
+            FE_ROLLBACK_NOTE="Frontend rollback completed. Previous OSS version restored."
+          elif [ "${FE_ROLLBACK_RESULT:-}" = "success" ] && [ "${FE_ROLLBACK_OUTPUT:-}" = "failure" ]; then
+            FE_ROLLBACK_NOTE="Frontend rollback ran but failed. Manual intervention required."
+            LABELS="$LABELS,critical"
+          elif [ "${FE_ROLLBACK_RESULT:-}" = "failure" ]; then
+            FE_ROLLBACK_NOTE="Frontend rollback failed. Manual intervention required."
+            LABELS="$LABELS,critical"
+          elif [ "${FE_ROLLBACK_RESULT:-}" = "skipped" ]; then
+            FE_ROLLBACK_NOTE="Frontend rollback skipped."
+          fi
+
           BODY="## Deploy Failed
 
           **Image tag**: ${IMAGE_TAG}
@@ -693,6 +825,7 @@ jobs:
           **Deploy result**: ${DEPLOY_RESULT:-skipped}
           **Smoke test**: ${SMOKE_RESULT:-skipped}
           **Rollback**: ${ROLLBACK_RESULT:-skipped}
+          **Frontend rollback**: ${FE_ROLLBACK_RESULT:-skipped}
 
           **API URL**: ${API_URL}
           **Frontend URL**: ${FE_URL}
@@ -706,6 +839,8 @@ jobs:
           \`\`\`
 
           ### ${ROLLBACK_NOTE}
+
+          ### ${FE_ROLLBACK_NOTE}
 
           ### Pipeline run
           [View run](${RUN_URL})"
