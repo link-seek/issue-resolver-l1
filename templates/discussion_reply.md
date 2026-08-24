@@ -3,4 +3,4 @@
 {llm_response}
 
 ---
-🤖 由 AI Agent 生成
+🤖 由 {model_name} 生成
