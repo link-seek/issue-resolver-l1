@@ -310,6 +310,12 @@ def main():
     llm_api_key = os.environ.get("LLM_API_KEY", "")
     _ = (llm_model, llm_base_url, llm_api_key)  # used via env in subprocess
 
+    model_display_map = {
+        "openai/primary": "GLM",
+        "openai/secondary": "DeepSeek-V4-Flash",
+    }
+    model_display_name = model_display_map.get(llm_model, llm_model)
+
     if not discussion_node_id:
         print("No DISCUSSION_NODE_ID set")
         sys.exit(1)
@@ -402,7 +408,7 @@ def main():
             except Exception as e:
                 print(f"Failed to reply discussion error: {e}")
     else:
-        reply_body = get_template("discussion_reply", llm_response=llm_response)
+        reply_body = get_template("discussion_reply", llm_response=llm_response, model_name=model_display_name)
 
         try:
             result_gql = reply_discussion(token, discussion_node_id, reply_body)

@@ -3,4 +3,4 @@
 {llm_response}
 
 ---
-🤖 由 DeepSeek-V4-Flash 生成
+🤖 由 {model_name} 生成
