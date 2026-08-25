@@ -170,14 +170,6 @@ def run_llm(prompt: str, env: dict) -> str:
 
     agent_script = """import os, sys, io, re, json
 
-# Initialize Laminar tracing (traces LLM + browser-use calls)
-try:
-    from lmnr import Laminar
-    Laminar.initialize()
-    print('Laminar initialized', file=sys.stderr, flush=True)
-except Exception as e:
-    print(f'Laminar init failed: {e}', file=sys.stderr, flush=True)
-
 # Capture stdout
 captured = io.StringIO()
 old_stdout = sys.stdout
@@ -294,7 +286,6 @@ with open(os.environ["RESPONSE_FILE"], 'w') as f:
             ["uv", "run", "--no-project",
              "--with", "openhands-sdk",
              "--with", "openhands-tools",
-             "--with", "lmnr[all]",
              "python", script_file],
             stdout=subprocess.PIPE, stderr=None, text=True, timeout=600,
             env={**env, "PROMPT_FILE": prompt_file,
