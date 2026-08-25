@@ -26,6 +26,8 @@ on:
         required: true
       TAVILY_API_KEY:
         required: false
+      LMNR_PROJECT_API_KEY:
+        required: false
 
 permissions:
   contents: write
@@ -205,8 +207,9 @@ jobs:
           APP_ID: ${{ secrets.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+          LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
         run: |
-          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
+          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography --with "lmnr[all]" \
             python ../issue-resolver-scripts/scripts/discuss.py
 
       - name: Upload logs
@@ -226,3 +229,4 @@ jobs:
           path: target-repo/screenshots/*.png
           retention-days: 7
           if-no-files-found: ignore
+
