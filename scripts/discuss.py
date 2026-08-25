@@ -201,8 +201,12 @@ mcp_config = {
     }
 }
 
+print('DEBUG: creating Agent...', flush=True)
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
+print('DEBUG: Agent created', flush=True)
+print('DEBUG: creating Conversation...', flush=True)
 conversation = Conversation(agent=agent, max_iteration_per_run=30)
+print('DEBUG: Conversation created', flush=True)
 
 with open(os.environ["PROMPT_FILE"]) as f:
     prompt = f.read()
@@ -210,8 +214,12 @@ with open(os.environ["PROMPT_FILE"]) as f:
 # Add instruction to write response to a file
 prompt += "\\n\\n## 重要：输出要求\\n请将你的完整分析方案写入文件 /tmp/llm_response.md，使用 markdown 格式。这是你唯一的输出方式。"
 
+print('DEBUG: sending message...', flush=True)
 conversation.send_message(prompt)
+print('DEBUG: message sent, calling run()...', flush=True)
+print('DEBUG: run() starting...', flush=True)
 conversation.run()
+print('DEBUG: run() completed', flush=True)
 
 sys.stdout = old_stdout
 raw = captured.getvalue()
@@ -424,6 +432,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
