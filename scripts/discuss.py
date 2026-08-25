@@ -213,6 +213,16 @@ prompt += "\\n\\n## 重要：输出要求\\n请将你的完整分析方案写入
 conversation.send_message(prompt)
 conversation.run()
 
+# Force close browser to prevent subprocess hang
+try:
+    from openhands.tools.browser_use.definition import BrowserToolSet
+    if BrowserToolSet._shared_executor:
+        BrowserToolSet._shared_executor._close()
+except Exception:
+    pass
+import subprocess as _sp
+_sp.run(["pkill", "-f", "chrome"], capture_output=True)
+
 sys.stdout = old_stdout
 raw = captured.getvalue()
 
