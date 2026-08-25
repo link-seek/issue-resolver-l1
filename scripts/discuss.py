@@ -10,12 +10,6 @@ import urllib.request
 
 from templates import get_template
 
-try:
-    from lmnr import Laminar
-    Laminar.initialize()
-except Exception:
-    pass
-
 
 def gh_graphql(token: str, query: str, variables: dict = None) -> dict:
     url = "https://api.github.com/graphql"
@@ -430,6 +424,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
