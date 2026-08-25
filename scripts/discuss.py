@@ -179,6 +179,7 @@ from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
+from openhands.tools.browser_use import BrowserToolSet
 
 llm = LLM(
     model=os.environ["LLM_MODEL"],
@@ -189,6 +190,7 @@ llm = LLM(
 tools = [
     Tool(name=TerminalTool.name),
     Tool(name=FileEditorTool.name),
+    Tool(name=BrowserToolSet.name),
 ]
 
 # CodeGraph MCP: surgical code context

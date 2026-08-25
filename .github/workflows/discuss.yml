@@ -206,7 +206,7 @@ jobs:
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
+          uv run --no-project --with openhands-sdk --with "openhands-tools[browser_use]" --with pyyaml --with cryptography \
             python ../issue-resolver-scripts/scripts/discuss.py
 
       - name: Upload logs
