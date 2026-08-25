@@ -175,11 +175,15 @@ captured = io.StringIO()
 old_stdout = sys.stdout
 sys.stdout = captured
 
+print('DEBUG: importing openhands.sdk...', file=sys.stderr, flush=True)
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
+print('DEBUG: importing openhands.tools...', file=sys.stderr, flush=True)
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
+print('DEBUG: importing BrowserToolSet...', file=sys.stderr, flush=True)
 from openhands.tools.browser_use import BrowserToolSet
+print('DEBUG: all imports done', file=sys.stderr, flush=True)
 
 llm = LLM(
     model=os.environ["LLM_MODEL"],
