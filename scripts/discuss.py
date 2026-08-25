@@ -293,15 +293,16 @@ with open(os.environ["RESPONSE_FILE"], 'w') as f:
         ["uv", "run", "--no-project",
          "--with", "openhands-sdk",
          "--with", "openhands-tools",
+         "--with", "lmnr[all]",
          "python", script_file],
-        capture_output=True, text=True,
+        capture_output=True, text=True, timeout=600,
         env={**env, "PROMPT_FILE": prompt_file,
              "RESPONSE_FILE": response_file},
         cwd=os.getcwd(),
     )
 
     if result.stderr:
-        print(f"[stderr] {result.stderr[:2000]}", file=sys.stderr)
+        print(f"[stderr] {result.stderr[:5000]}", file=sys.stderr)
 
     try:
         with open(response_file) as f:
