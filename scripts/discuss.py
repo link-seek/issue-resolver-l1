@@ -196,7 +196,7 @@ llm = LLM(
 tools = [
     Tool(name=TerminalTool.name),
     Tool(name=FileEditorTool.name),
-    Tool(name=BrowserToolSet.name),
+    Tool(name=BrowserToolSet.name, params={"use_vision": False}),
 ]
 
 # CodeGraph MCP: surgical code context
@@ -430,5 +430,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
