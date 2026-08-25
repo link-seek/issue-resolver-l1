@@ -3,6 +3,7 @@
 ## 仓库信息
 - 仓库: {repo_name}
 - 当前工作目录包含完整代码，你可以使用 FileEditor 工具查看文件内容，使用 Terminal 工具运行命令
+- 你可以使用浏览器工具（BrowserToolSet）访问生产环境 URL 验证线上状态，例如访问 https://xieyucheng.top 查看页面或调用 API
 
 ## 仓库文件结构
 ```
