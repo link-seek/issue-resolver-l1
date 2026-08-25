@@ -208,7 +208,7 @@ mcp_config = {
 }
 
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
-conversation = Conversation(agent=agent)
+conversation = Conversation(agent=agent, max_iteration_per_run=30)
 
 with open(os.environ["PROMPT_FILE"]) as f:
     prompt = f.read()
@@ -430,4 +430,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
