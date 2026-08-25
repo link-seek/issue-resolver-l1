@@ -281,19 +281,20 @@ with open(os.environ["RESPONSE_FILE"], 'w') as f:
     with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
         response_file = f.name
 
-    result = subprocess.run(
-        ["uv", "run", "--no-project",
-         "--with", "openhands-sdk",
-         "--with", "openhands-tools",
-         "python", script_file],
-        capture_output=True, text=True, timeout=600,
-        env={**env, "PROMPT_FILE": prompt_file,
-             "RESPONSE_FILE": response_file},
-        cwd=os.getcwd(),
-    )
-
-    if result.stderr:
-        print(f"[stderr] {result.stderr[:5000]}", file=sys.stderr)
+    try:
+        result = subprocess.run(
+            ["uv", "run", "--no-project",
+             "--with", "openhands-sdk",
+             "--with", "openhands-tools",
+             "python", script_file],
+            stdout=subprocess.PIPE, stderr=None, text=True, timeout=600,
+            env={**env, "PROMPT_FILE": prompt_file,
+                 "RESPONSE_FILE": response_file},
+            cwd=os.getcwd(),
+        )
+    except subprocess.TimeoutExpired:
+        print("[ERROR] Agent timed out after 600s", file=sys.stderr)
+        return "(Agent 执行超时，请稍后重试)"
 
     try:
         with open(response_file) as f:
