@@ -175,15 +175,11 @@ captured = io.StringIO()
 old_stdout = sys.stdout
 sys.stdout = captured
 
-print('DEBUG: importing openhands.sdk...', file=sys.stderr, flush=True)
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
-print('DEBUG: importing openhands.tools...', file=sys.stderr, flush=True)
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
-print('DEBUG: importing BrowserToolSet...', file=sys.stderr, flush=True)
 from openhands.tools.browser_use import BrowserToolSet
-print('DEBUG: all imports done', file=sys.stderr, flush=True)
 
 llm = LLM(
     model=os.environ["LLM_MODEL"],
@@ -205,12 +201,8 @@ mcp_config = {
     }
 }
 
-print('DEBUG: creating Agent...', file=sys.stderr, flush=True)
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
-print('DEBUG: Agent created', file=sys.stderr, flush=True)
-print('DEBUG: creating Conversation...', file=sys.stderr, flush=True)
 conversation = Conversation(agent=agent, max_iteration_per_run=30)
-print('DEBUG: Conversation created', file=sys.stderr, flush=True)
 
 with open(os.environ["PROMPT_FILE"]) as f:
     prompt = f.read()
@@ -218,12 +210,8 @@ with open(os.environ["PROMPT_FILE"]) as f:
 # Add instruction to write response to a file
 prompt += "\\n\\n## 重要：输出要求\\n请将你的完整分析方案写入文件 /tmp/llm_response.md，使用 markdown 格式。这是你唯一的输出方式。"
 
-print('DEBUG: sending message...', file=sys.stderr, flush=True)
 conversation.send_message(prompt)
-print('DEBUG: message sent, calling run()...', file=sys.stderr, flush=True)
-print('DEBUG: run() starting...', file=sys.stderr, flush=True)
 conversation.run()
-print('DEBUG: run() completed', file=sys.stderr, flush=True)
 
 sys.stdout = old_stdout
 raw = captured.getvalue()
@@ -297,7 +285,6 @@ with open(os.environ["RESPONSE_FILE"], 'w') as f:
         ["uv", "run", "--no-project",
          "--with", "openhands-sdk",
          "--with", "openhands-tools",
-         "--with", "lmnr[all]",
          "python", script_file],
         capture_output=True, text=True, timeout=600,
         env={**env, "PROMPT_FILE": prompt_file,
@@ -437,8 +424,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
