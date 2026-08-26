@@ -355,10 +355,13 @@ def main():
             discussion_number=discussion_number,
         )
     else:
+        admin_email = os.environ.get("EAP_ADMIN_EMAIL", "")
+        admin_password = os.environ.get("EAP_ADMIN_PASSWORD", "")
         prompt = get_template(
             "prompt_discuss",
             repo_name=repo_name, file_tree=file_tree, title=title,
             category=category, body=body, comment_history=comment_history,
+            admin_email=admin_email, admin_password=admin_password,
         )
 
     print("Sending to LLM...")
