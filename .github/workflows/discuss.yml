@@ -28,6 +28,10 @@ on:
         required: false
       LMNR_PROJECT_API_KEY:
         required: false
+      EAP_ADMIN_EMAIL:
+        required: false
+      EAP_ADMIN_PASSWORD:
+        required: false
 
 permissions:
   contents: write
@@ -208,6 +212,8 @@ jobs:
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
+          EAP_ADMIN_EMAIL: ${{ secrets.EAP_ADMIN_EMAIL }}
+          EAP_ADMIN_PASSWORD: ${{ secrets.EAP_ADMIN_PASSWORD }}
         run: |
           uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
             python ../issue-resolver-scripts/scripts/discuss.py
