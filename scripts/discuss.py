@@ -202,13 +202,13 @@ mcp_config = {
 }
 
 agent = Agent(llm=llm, tools=tools, mcp_config=mcp_config)
-conversation = Conversation(agent=agent, max_iteration_per_run=30)
+conversation = Conversation(agent=agent, max_iteration_per_run=50)
 
 with open(os.environ["PROMPT_FILE"]) as f:
     prompt = f.read()
 
 # Add instruction to write response to a file
-prompt += "\\n\\n## 重要：输出要求\\n请严格按上方『回复模板』的结构将最终回复写入文件 /tmp/llm_response.md（markdown 格式）。这是你唯一的输出方式。标题层级不可改动、章节不可省略，尖括号占位符必须替换为真实内容；禁止写入思考过程、工具调用结果、内部推理、Token 计数或 Agent Action 日志。不符合模板结构的回复会被系统拒绝。"
+prompt += "\\n\\n## 重要：输出要求\\n请严格按上方『回复模板』的结构将最终回复写入文件 /tmp/llm_response.md（markdown 格式）。这是你唯一的输出方式。\\n策略：一旦掌握回答所需的基本事实，立刻先写入包含『## 结论』的完整骨架，再用 FileEditor 逐节补充细化。绝不要把写文件留到最后一步——若工具调用轮次用尽而文件尚未创建，本次回复将作废。标题层级不可改动、章节不可省略，尖括号占位符必须替换为真实内容；禁止写入思考过程、工具调用结果、内部推理、Token 计数或 Agent Action 日志。不符合模板结构的回复会被系统拒绝。"
 
 conversation.send_message(prompt)
 conversation.run()
