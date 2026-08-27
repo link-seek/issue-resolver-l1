@@ -208,7 +208,7 @@ with open(os.environ["PROMPT_FILE"]) as f:
     prompt = f.read()
 
 # Add instruction to write response to a file
-prompt += "\\n\\n## 重要：输出要求\\n请将你的完整分析方案写入文件 /tmp/llm_response.md，使用 markdown 格式。这是你唯一的输出方式。"
+prompt += "\\n\\n## 重要：输出要求\\n请将你的完整分析方案写入文件 /tmp/llm_response.md，使用 markdown 格式。这是你唯一的输出方式。\\n**只写入最终给用户的回复**，不要写入思考过程、工具调用结果、内部推理、Token 计数或 Agent Action 日志。文件内容应该是一篇完整的技术方案 markdown 文档，可以直接作为讨论回复发布。"
 
 conversation.send_message(prompt)
 conversation.run()
@@ -223,6 +223,38 @@ try:
         response = f.read().strip()
 except Exception:
     pass
+
+# Clean agent internal output patterns from response
+def clean_response(text):
+    if not text:
+        return text
+    lines = text.split('\\n')
+    cleaned = []
+    skip_block = False
+    for line in lines:
+        stripped = line.strip()
+        # Skip agent internal output markers
+        if any(stripped.startswith(m) for m in [
+            'Agent Action', 'Observation', 'Tokens:', 'Tool:', 'Result:',
+            'Thought:', 'Thinking:', 'Summary:', '🤔 Thinking:',
+            'Finish with message:', '📁 Working directory:',
+            '🐍 Python interpreter:', '✅ Exit code:',
+        ]):
+            skip_block = True
+            continue
+        if skip_block:
+            # End skip block on next markdown heading or blank line after content
+            if stripped.startswith('#') and not stripped.startswith('#!'):
+                skip_block = False
+                cleaned.append(line)
+            continue
+        # Skip lines that look like file paths from tool output
+        if stripped.startswith('/home/runner/') or stripped.startswith('/opt/'):
+            continue
+        cleaned.append(line)
+    return '\\n'.join(cleaned).strip()
+
+response = clean_response(response)
 
 # Fallback: try conversation.state
 if not response:
@@ -265,6 +297,7 @@ if not response:
 # Last resort
 if not response:
     response = raw[-5000:] if len(raw) > 5000 else raw
+    response = clean_response(response)
 
 # Truncate
 if len(response) > 65000:
