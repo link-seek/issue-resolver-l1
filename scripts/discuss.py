@@ -208,7 +208,7 @@ with open(os.environ["PROMPT_FILE"]) as f:
     prompt = f.read()
 
 # Add instruction to write response to a file
-prompt += "\\n\\n## 重要：输出要求\\n请将你的完整分析方案写入文件 /tmp/llm_response.md，使用 markdown 格式。这是你唯一的输出方式。\\n**只写入最终给用户的回复**，不要写入思考过程、工具调用结果、内部推理、Token 计数或 Agent Action 日志。文件内容应该是一篇完整的技术方案 markdown 文档，可以直接作为讨论回复发布。"
+prompt += "\\n\\n## 重要：输出要求\\n请严格按上方『回复模板』的结构将最终回复写入文件 /tmp/llm_response.md（markdown 格式）。这是你唯一的输出方式。标题层级不可改动、章节不可省略，尖括号占位符必须替换为真实内容；禁止写入思考过程、工具调用结果、内部推理、Token 计数或 Agent Action 日志。不符合模板结构的回复会被系统拒绝。"
 
 conversation.send_message(prompt)
 conversation.run()
@@ -223,6 +223,16 @@ try:
         response = f.read().strip()
 except Exception:
     pass
+
+required_marker = os.environ.get("REQUIRED_MARKER", "")
+
+def is_valid_response(text):
+    # Reject empty / tiny / off-template responses (e.g. raw tool dumps)
+    if not text or len(text.strip()) < 30:
+        return False
+    if required_marker and required_marker not in text:
+        return False
+    return True
 
 # Clean agent internal output patterns from response
 def clean_response(text):
@@ -255,6 +265,8 @@ def clean_response(text):
     return '\\n'.join(cleaned).strip()
 
 response = clean_response(response)
+if not is_valid_response(response):
+    response = ""
 
 # Fallback: try conversation.state
 if not response:
@@ -265,10 +277,12 @@ if not response:
             if val and isinstance(val, (list, tuple)) and len(val) > 0:
                 last = val[-1]
                 for msg_attr in ['content', 'text', 'message', 'response', 'output', 'data', 'body']:
-                    msg_val = getattr(last, msg_attr, None)
-                    if msg_val and isinstance(msg_val, str) and len(msg_val) > 20:
-                        response = msg_val
-                        break
+                    cand = getattr(last, msg_attr, None)
+                    if cand and isinstance(cand, str):
+                        cand = clean_response(cand)
+                        if is_valid_response(cand):
+                            response = cand
+                            break
                 if response:
                     break
     except:
@@ -292,12 +306,13 @@ if not response:
             start_idx = i
             break
     if start_idx < end_idx:
-        response = '\\n'.join(lines[start_idx:end_idx]).strip()
+        resp_cand = '\\n'.join(lines[start_idx:end_idx]).strip()
+        if is_valid_response(clean_response(resp_cand)):
+            response = resp_cand
 
-# Last resort
+# Final guard: never publish unvalidated raw output
 if not response:
-    response = raw[-5000:] if len(raw) > 5000 else raw
-    response = clean_response(response)
+    response = "(Agent 未能生成规范回复，请重试)"
 
 # Truncate
 if len(response) > 65000:
@@ -379,6 +394,7 @@ def main():
     print(f"File tree: {len(file_tree.split(chr(10)))} files")
 
     llm_env = {**os.environ}
+    llm_env["REQUIRED_MARKER"] = "ISSUE_TITLE:" if discuss_mode == "to-issue" else "## 结论"
 
     if discuss_mode == "to-issue":
         prompt = get_template(
@@ -390,11 +406,22 @@ def main():
     else:
         admin_email = os.environ.get("EAP_ADMIN_EMAIL", "")
         admin_password = os.environ.get("EAP_ADMIN_PASSWORD", "")
+        # Python-side deterministic first-reply detection (bot has no replies yet)
+        bot_login = os.environ.get("BOT_LOGIN", "link-seek-bot")
+        is_first_reply = not any(
+            (c.get("author") or {}).get("login") == bot_login for c in comments
+        )
+        print(f"First reply: {is_first_reply}")
+
+        response_template = get_template(
+            "response_first_reply" if is_first_reply else "response_followup"
+        )
         prompt = get_template(
             "prompt_discuss",
             repo_name=repo_name, file_tree=file_tree, title=title,
             category=category, body=body, comment_history=comment_history,
             admin_email=admin_email, admin_password=admin_password,
+            response_template=response_template,
         )
 
     print("Sending to LLM...")
