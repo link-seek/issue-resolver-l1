@@ -126,6 +126,7 @@ jobs:
           DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
           DISCUSS_MODEL: ${{ secrets.DISCUSS_MODEL }}
           DISCUSS_FALLBACK_MODEL: ${{ secrets.DISCUSS_FALLBACK_MODEL }}
+          LLM_MODEL_DISPLAY: ${{ secrets.DISCUSS_MODEL }}
         run: |
           echo "active_model=openai/primary" >> $GITHUB_OUTPUT
           cat > /tmp/litellm_config.yaml << EOF

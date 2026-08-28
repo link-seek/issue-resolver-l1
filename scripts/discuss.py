@@ -368,7 +368,7 @@ def main():
         "openai/primary": "GLM",
         "openai/secondary": "DeepSeek-V4-Flash",
     }
-    model_display_name = model_display_map.get(llm_model, llm_model)
+    model_display_name = os.environ.get("LLM_MODEL_DISPLAY") or model_display_map.get(llm_model, llm_model)
 
     if not discussion_node_id:
         print("No DISCUSSION_NODE_ID set")
