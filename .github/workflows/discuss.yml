@@ -120,45 +120,39 @@ jobs:
         id: llm
         shell: bash
         env:
-          PRIMARY_KEY_1: ${{ secrets.PRIMARY_API_KEY_1 }}
-          PRIMARY_KEY_2: ${{ secrets.PRIMARY_API_KEY_2 }}
-          PRIMARY_KEY_3: ${{ secrets.PRIMARY_API_KEY_3 }}
-          PRIMARY_BASE: ${{ secrets.PRIMARY_API_BASE }}
-          PRIMARY_MODEL: ${{ secrets.PRIMARY_MODEL }}
-          SECONDARY_KEY: ${{ secrets.SECONDARY_API_KEY }}
-          SECONDARY_BASE: ${{ secrets.SECONDARY_API_BASE }}
-          SECONDARY_MODEL: ${{ secrets.SECONDARY_MODEL }}
+          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
+          DISCUSS_KEY_2: ${{ secrets.DISCUSS_API_KEY_2 }}
+          DISCUSS_KEY_3: ${{ secrets.DISCUSS_API_KEY_3 }}
+          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
+          DISCUSS_MODEL: ${{ secrets.DISCUSS_MODEL }}
+          DISCUSS_FALLBACK_MODEL: ${{ secrets.DISCUSS_FALLBACK_MODEL }}
         run: |
-          HOUR_BEIJING=$(( (10#$(date -u +%H) + 8) % 24 ))
-          if [ "$HOUR_BEIJING" -ge 9 ] && [ "$HOUR_BEIJING" -lt 18 ]; then
-            echo "Beijing $HOUR_BEIJING:00 — working hours, using primary model"
-            echo "active_model=openai/primary" >> $GITHUB_OUTPUT
-          else
-            echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model"
-            echo "active_model=openai/secondary" >> $GITHUB_OUTPUT
-          fi
+          echo "active_model=openai/primary" >> $GITHUB_OUTPUT
           cat > /tmp/litellm_config.yaml << EOF
           model_list:
             - model_name: primary
               litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_1}
-                api_base: ${PRIMARY_BASE}
+                model: openai/${DISCUSS_MODEL}
+                api_key: ${DISCUSS_KEY_1}
+                api_base: ${DISCUSS_BASE}
+              fallbacks: ["hy3fallback"]
             - model_name: primary
               litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_2}
-                api_base: ${PRIMARY_BASE}
+                model: openai/${DISCUSS_MODEL}
+                api_key: ${DISCUSS_KEY_2}
+                api_base: ${DISCUSS_BASE}
+              fallbacks: ["hy3fallback"]
             - model_name: primary
               litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_3}
-                api_base: ${PRIMARY_BASE}
-            - model_name: secondary
+                model: openai/${DISCUSS_MODEL}
+                api_key: ${DISCUSS_KEY_3}
+                api_base: ${DISCUSS_BASE}
+              fallbacks: ["hy3fallback"]
+            - model_name: hy3fallback
               litellm_params:
-                model: openai/${SECONDARY_MODEL}
-                api_key: ${SECONDARY_KEY}
-                api_base: ${SECONDARY_BASE}
+                model: openai/${DISCUSS_FALLBACK_MODEL}
+                api_key: ${DISCUSS_KEY_1}
+                api_base: ${DISCUSS_BASE}
           EOF
           cat >> /tmp/litellm_config.yaml << 'EOF'
           litellm_settings:
