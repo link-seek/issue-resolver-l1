@@ -126,7 +126,6 @@ jobs:
           DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
           DISCUSS_MODEL: ${{ secrets.DISCUSS_MODEL }}
           DISCUSS_FALLBACK_MODEL: ${{ secrets.DISCUSS_FALLBACK_MODEL }}
-          LLM_MODEL_DISPLAY: ${{ secrets.DISCUSS_MODEL }}
         run: |
           echo "active_model=openai/primary" >> $GITHUB_OUTPUT
           cat > /tmp/litellm_config.yaml << EOF
@@ -210,6 +209,7 @@ jobs:
           LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
           EAP_ADMIN_EMAIL: ${{ secrets.EAP_ADMIN_EMAIL }}
           EAP_ADMIN_PASSWORD: ${{ secrets.EAP_ADMIN_PASSWORD }}
+          LLM_MODEL_DISPLAY: ${{ secrets.DISCUSS_MODEL }}
         run: |
           uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
             python ../issue-resolver-scripts/scripts/discuss.py
