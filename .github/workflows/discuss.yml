@@ -164,6 +164,7 @@ jobs:
             num_retries: 3
             allowed_fails: 3
             request_timeout: 120
+            fallbacks: [{"primary": ["hy3fallback"]}]
           general_settings:
             master_key: sk-litellm-proxy
             drop_params: false
