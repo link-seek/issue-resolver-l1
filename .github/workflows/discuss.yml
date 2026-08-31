@@ -127,7 +127,7 @@ jobs:
           DISCUSS_MODEL: ${{ secrets.DISCUSS_MODEL }}
           DISCUSS_FALLBACK_MODEL: ${{ secrets.DISCUSS_FALLBACK_MODEL }}
         run: |
-          python ../issue-resolver-scripts/scripts/discover_free_models.py
+          python $GITHUB_WORKSPACE/issue-resolver-scripts/scripts/discover_free_models.py
           echo "active_model=openai/primary" >> $GITHUB_OUTPUT
 
           docker run -d --name litellm \
