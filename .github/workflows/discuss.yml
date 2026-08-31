@@ -135,22 +135,28 @@ jobs:
                 model: openai/${DISCUSS_MODEL}
                 api_key: ${DISCUSS_KEY_1}
                 api_base: ${DISCUSS_BASE}
-              fallbacks: ["hy3fallback"]
+              fallbacks: ["nemotronfallback"]
             - model_name: primary
               litellm_params:
                 model: openai/${DISCUSS_MODEL}
                 api_key: ${DISCUSS_KEY_2}
                 api_base: ${DISCUSS_BASE}
-              fallbacks: ["hy3fallback"]
+              fallbacks: ["nemotronfallback"]
             - model_name: primary
               litellm_params:
                 model: openai/${DISCUSS_MODEL}
                 api_key: ${DISCUSS_KEY_3}
                 api_base: ${DISCUSS_BASE}
-              fallbacks: ["hy3fallback"]
-            - model_name: hy3fallback
+              fallbacks: ["nemotronfallback"]
+            - model_name: nemotronfallback
               litellm_params:
-                model: openai/${DISCUSS_FALLBACK_MODEL}
+                model: openai/nemotron-3.5-lightning-free
+                api_key: ${DISCUSS_KEY_1}
+                api_base: ${DISCUSS_BASE}
+              fallbacks: ["lingfallback"]
+            - model_name: lingfallback
+              litellm_params:
+                model: openai/ling-3.0-flash-fin-free
                 api_key: ${DISCUSS_KEY_1}
                 api_base: ${DISCUSS_BASE}
           EOF
@@ -164,7 +170,7 @@ jobs:
             num_retries: 3
             allowed_fails: 3
             request_timeout: 120
-            fallbacks: [{"primary": ["hy3fallback"]}]
+            fallbacks: [{"primary": ["nemotronfallback", "lingfallback"]}]
           general_settings:
             master_key: sk-litellm-proxy
             drop_params: false
