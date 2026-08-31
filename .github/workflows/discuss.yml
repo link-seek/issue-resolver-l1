@@ -127,54 +127,8 @@ jobs:
           DISCUSS_MODEL: ${{ secrets.DISCUSS_MODEL }}
           DISCUSS_FALLBACK_MODEL: ${{ secrets.DISCUSS_FALLBACK_MODEL }}
         run: |
+          python ../issue-resolver-scripts/scripts/discover_free_models.py
           echo "active_model=openai/primary" >> $GITHUB_OUTPUT
-          cat > /tmp/litellm_config.yaml << EOF
-          model_list:
-            - model_name: primary
-              litellm_params:
-                model: openai/${DISCUSS_MODEL}
-                api_key: ${DISCUSS_KEY_1}
-                api_base: ${DISCUSS_BASE}
-              fallbacks: ["nemotronfallback"]
-            - model_name: primary
-              litellm_params:
-                model: openai/${DISCUSS_MODEL}
-                api_key: ${DISCUSS_KEY_2}
-                api_base: ${DISCUSS_BASE}
-              fallbacks: ["nemotronfallback"]
-            - model_name: primary
-              litellm_params:
-                model: openai/${DISCUSS_MODEL}
-                api_key: ${DISCUSS_KEY_3}
-                api_base: ${DISCUSS_BASE}
-              fallbacks: ["nemotronfallback"]
-            - model_name: nemotronfallback
-              litellm_params:
-                model: openai/nemotron-3.5-lightning-free
-                api_key: ${DISCUSS_KEY_1}
-                api_base: ${DISCUSS_BASE}
-              fallbacks: ["lingfallback"]
-            - model_name: lingfallback
-              litellm_params:
-                model: openai/ling-3.0-flash-fin-free
-                api_key: ${DISCUSS_KEY_1}
-                api_base: ${DISCUSS_BASE}
-          EOF
-          cat >> /tmp/litellm_config.yaml << 'EOF'
-          litellm_settings:
-            cache: true
-            cache_params:
-              type: local
-          router_settings:
-            routing_strategy: least-busy
-            num_retries: 3
-            allowed_fails: 3
-            request_timeout: 120
-            fallbacks: [{"primary": ["nemotronfallback", "lingfallback"]}]
-          general_settings:
-            master_key: sk-litellm-proxy
-            drop_params: false
-          EOF
 
           docker run -d --name litellm \
             -p 4000:4000 \
