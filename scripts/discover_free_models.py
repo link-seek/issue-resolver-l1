@@ -40,49 +40,47 @@ def fetch_available():
 
 def build_config(chain):
     """Build litellm YAML config. chain = [primary, fb1, fb2, ...]."""
+    lines = []
+    lines.append("model_list:")
+
+    # Primary group: 3 keys for load balancing
+    first_fb = '"fb1"' if len(chain) > 1 else "[]"
+    for key_var in ("DISCUSS_KEY_1", "DISCUSS_KEY_2", "DISCUSS_KEY_3"):
+        lines.append(f"  - model_name: primary")
+        lines.append(f"    litellm_params:")
+        lines.append(f"      model: openai/{chain[0]}")
+        lines.append(f"      api_key: ${{{key_var}}}")
+        lines.append(f"      api_base: ${{DISCUSS_BASE}}")
+        lines.append(f"    fallbacks: [{first_fb}]")
+
+    # Fallback groups
+    for i, fb_model in enumerate(chain[1:], 1):
+        next_fb = f'"fb{i+1}"' if i + 1 < len(chain) else "[]"
+        lines.append(f"  - model_name: fb{i}")
+        lines.append(f"    litellm_params:")
+        lines.append(f"      model: openai/{fb_model}")
+        lines.append(f"      api_key: ${{DISCUSS_KEY_1}}")
+        lines.append(f"      api_base: ${{DISCUSS_BASE}}")
+        lines.append(f"    fallbacks: [{next_fb}]")
+
+    # Settings
+    fb_groups = ",".join(f'"fb{i}"' for i in range(1, len(chain)))
+    lines.append("litellm_settings:")
+    lines.append("  cache: true")
+    lines.append("  cache_params:")
+    lines.append("    type: local")
+    lines.append("router_settings:")
+    lines.append("  routing_strategy: least-busy")
+    lines.append("  num_retries: 3")
+    lines.append("  allowed_fails: 3")
+    lines.append("  request_timeout: 120")
+    lines.append(f'  fallbacks: [{{"primary": [{fb_groups}]}}]')
+    lines.append("general_settings:")
+    lines.append("  master_key: sk-litellm-proxy")
+    lines.append("  drop_params: false")
+
     with open("/tmp/litellm_config.yaml", "w") as f:
-        # --- model_list ---
-        f.write("model_list:\n")
-
-        # Primary group: 3 keys for load balancing
-        first_fb = f'"fb1"' if len(chain) > 1 else "[]"
-        for key_var in ("DISCUSS_KEY_1", "DISCUSS_KEY_2", "DISCUSS_KEY_3"):
-            f.write(f"""\
-            - model_name: primary
-              litellm_params:
-                model: openai/{chain[0]}
-                api_key: ${{{key_var}}}
-                api_base: ${{DISCUSS_BASE}}
-              fallbacks: [{first_fb}]\n""")
-
-        # Fallback groups
-        for i, fb_model in enumerate(chain[1:], 1):
-            next_fb = f'"fb{i+1}"' if i + 1 < len(chain) else "[]"
-            f.write(f"""\
-            - model_name: fb{i}
-              litellm_params:
-                model: openai/{fb_model}
-                api_key: ${{DISCUSS_KEY_1}}
-                api_base: ${{DISCUSS_BASE}}
-              fallbacks: [{next_fb}]\n""")
-
-        # --- settings ---
-        fb_groups = ",".join(f'"fb{i}"' for i in range(1, len(chain)))
-        f.write(f"""\
-          litellm_settings:
-            cache: true
-            cache_params:
-              type: local
-          router_settings:
-            routing_strategy: least-busy
-            num_retries: 3
-            allowed_fails: 3
-            request_timeout: 120
-            fallbacks: [{{"primary": [{fb_groups}]}}]
-          general_settings:
-            master_key: sk-litellm-proxy
-            drop_params: false
-""")
+        f.write("\n".join(lines) + "\n")
 
     # Expand env vars (litellm can't do shell expansion)
     with open("/tmp/litellm_config.yaml") as f:
