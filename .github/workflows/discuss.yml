@@ -172,7 +172,7 @@ jobs:
           EAP_ADMIN_PASSWORD: ${{ secrets.EAP_ADMIN_PASSWORD }}
           LLM_MODEL_DISPLAY: ${{ secrets.DISCUSS_MODEL }}
         run: |
-          uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
+          uv run --no-project --with openhands-sdk --with openhands-tools --with "mcp>=1.10.1" --with pyyaml --with cryptography \
             python ../issue-resolver-scripts/scripts/discuss.py
 
       - name: Upload logs
