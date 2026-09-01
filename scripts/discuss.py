@@ -31,11 +31,10 @@ def get_actual_model() -> str:
         if matches:
             model = matches[-1].strip()
             # Strip openai/ prefix for display
-            if model.startswith("openai/"):
-                model = model[7:]
+            model = model.removeprefix("openai/")
             return model
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WARN] Failed to get actual model: {e}", file=sys.stderr)
     return ""
 
 
@@ -371,7 +370,7 @@ os._exit(0)
         response_file = f.name
 
     try:
-        result = subprocess.run(
+        subprocess.run(
             ["uv", "run", "--no-project",
              "--with", "openhands-sdk",
              "--with", "openhands-tools",
