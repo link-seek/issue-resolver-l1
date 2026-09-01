@@ -10,16 +10,20 @@ on:
 jobs:
   discover:
     runs-on: ubuntu-latest
+    env:
+      DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
+      DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug env
+        run: |
+          echo "DISCUSS_BASE=$DISCUSS_BASE"
+          echo "DISCUSS_KEY_1 length=${#DISCUSS_KEY_1}"
+
       - name: Query available models
-        env:
-          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
-          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
         run: |
           echo "=== Available Models from OpenCode Zen ==="
-          echo "DISCUSS_BASE=$DISCUSS_BASE"
           curl -sS "$DISCUSS_BASE/models" \
             -H "Authorization: Bearer $DISCUSS_KEY_1" | \
             python3 -c "
@@ -35,9 +39,6 @@ jobs:
           "
 
       - name: Health check all free models
-        env:
-          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
-          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
         run: |
           echo "=== Health Check Results ==="
           python3 -c "
@@ -80,9 +81,6 @@ jobs:
 
       - name: Direct test specific model
         if: github.event.inputs.model_to_test != ''
-        env:
-          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
-          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
         run: |
           MODEL="${{ github.event.inputs.model_to_test }}"
           echo "=== Direct Test: $MODEL ==="
