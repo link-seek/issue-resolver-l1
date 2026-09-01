@@ -1,0 +1,92 @@
+name: Test Model Discovery
+on:
+  workflow_dispatch:
+    inputs:
+      model_to_test:
+        description: 'Specific model to test (leave empty for all)'
+        required: false
+        default: 'muse-spark-1.2-contributor-free'
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Query available models
+        env:
+          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
+          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
+        run: |
+          echo "=== Available Models from OpenCode Zen ==="
+          curl -sS "$DISCUSS_BASE/models" \
+            -H "Authorization: Bearer $DISCUSS_KEY_1" | \
+            python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          models = [m['id'] for m in data.get('data', [])]
+          print(f'Total models: {len(models)}')
+          print()
+          target = '${{ github.event.inputs.model_to_test }}'
+          for m in sorted(models):
+              flag = ' <<<< TARGET' if m == target else ''
+              print(f'  {m}{flag}')
+          "
+
+      - name: Health check all free models
+        env:
+          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
+          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
+        run: |
+          echo "=== Health Check Results ==="
+          python3 -c "
+          import os, json, urllib.request
+          API_BASE = os.environ['DISCUSS_BASE']
+          KEY = os.environ['DISCUSS_KEY_1']
+          FREE_MODELS = [
+              'mimo-v2.5-free',
+              'nemotron-3.5-lightning-free',
+              'ling-3.0-flash-fin-free',
+              'big-pickle',
+              'deepseek-v4-flash-free',
+              'muse-spark-1.2-contributor-free',
+              'nemotron-3-ultra-free',
+              'laguna-s-2.1-free',
+          ]
+          for m in FREE_MODELS:
+              try:
+                  req = urllib.request.Request(
+                      f'{API_BASE}/chat/completions',
+                      data=json.dumps({
+                          'model': m,
+                          'max_tokens': 1,
+                          'messages': [{'role': 'user', 'content': 'hi'}],
+                      }).encode(),
+                      headers={
+                          'Authorization': f'Bearer {KEY}',
+                          'Content-Type': 'application/json',
+                          'User-Agent': 'OpenCode-Test/1.0',
+                      },
+                  )
+                  with urllib.request.urlopen(req, timeout=10) as resp:
+                      print(f'  {m}: HTTP {resp.status} OK')
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode()[:200]
+                  print(f'  {m}: HTTP {e.code} {e.reason} | {body}')
+              except Exception as e:
+                  print(f'  {m}: FAIL {e}')
+          "
+
+      - name: Direct test specific model
+        if: github.event.inputs.model_to_test != ''
+        env:
+          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
+          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
+        run: |
+          MODEL="${{ github.event.inputs.model_to_test }}"
+          echo "=== Direct Test: $MODEL ==="
+          curl -sS -w "\nHTTP_CODE:%{http_code}\n" \
+            -X POST "$DISCUSS_BASE/chat/completions" \
+            -H "Authorization: Bearer $DISCUSS_KEY_1" \
+            -H "Content-Type: application/json" \
+            -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1}"
