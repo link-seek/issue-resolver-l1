@@ -133,6 +133,7 @@ jobs:
           docker run -d --name litellm \
             -p 4000:4000 \
             -v /tmp/litellm_config.yaml:/app/config.yaml \
+            -e LITELLM_LOG=DEBUG \
             ghcr.io/berriai/litellm:main-latest \
             --config /app/config.yaml --port 4000 --host 0.0.0.0
 

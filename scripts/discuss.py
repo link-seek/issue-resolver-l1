@@ -3,12 +3,39 @@
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import urllib.request
 
 from templates import get_template
+
+
+def get_actual_model() -> str:
+    """Extract actual model name from litellm Docker logs.
+
+    Parses log lines like:
+        litellm.acompletion(model=openai/mimo-v2.5-free) 200 OK
+    Returns the actual model name (without openai/ prefix), or empty string.
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "litellm", "2>&1"],
+            capture_output=True, text=True, timeout=10
+        )
+        output = result.stdout + result.stderr
+        # Match: litellm.acompletion(model=<actual_model>) <status>
+        matches = re.findall(r'litellm\.acompletion\(model=([^)]+)\)', output)
+        if matches:
+            model = matches[-1].strip()
+            # Strip openai/ prefix for display
+            if model.startswith("openai/"):
+                model = model[7:]
+            return model
+    except Exception:
+        pass
+    return ""
 
 
 def gh_graphql(token: str, query: str, variables: dict = None) -> dict:
@@ -427,6 +454,12 @@ def main():
     print("Sending to LLM...")
     llm_response = run_llm(prompt, llm_env)
     print(f"Response length: {len(llm_response)} chars")
+
+    # Try to detect actual model from litellm logs (overrides configured model name)
+    actual_model = get_actual_model()
+    if actual_model:
+        model_display_name = actual_model
+        print(f"Actual model used: {model_display_name}")
 
     if discuss_mode == "to-issue":
         issue_title, issue_labels, issue_body = parse_issue_response(llm_response)
