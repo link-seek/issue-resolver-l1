@@ -207,6 +207,16 @@ from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
+# Monkey-patch: skip MCP handler registration in BrowserUseServer.
+# openhands-tools never serves MCP — it calls browser methods directly.
+# The _setup_handlers() call uses @server.list_tools() which breaks with
+# certain mcp SDK versions. See: https://github.com/OpenHands/software-agent-sdk/pull/4342
+try:
+    from openhands.tools.browser_use.server import CustomBrowserUseServer
+    CustomBrowserUseServer._setup_handlers = lambda self: None
+except ImportError:
+    pass
+
 from openhands.tools.browser_use import BrowserToolSet
 
 llm = LLM(
