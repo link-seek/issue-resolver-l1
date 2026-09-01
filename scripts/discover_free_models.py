@@ -1,23 +1,57 @@
 #!/usr/bin/env python3
 """Query Zen /zen/v1/models, discover available free models, write litellm config."""
 import json, os, sys, urllib.request
+from pathlib import Path
 
 API_BASE = os.environ.get("DISCUSS_BASE", "https://opencode.ai/zen/v1")
 KEYS = [os.environ.get(f"DISCUSS_KEY_{i}", "") for i in (1, 2, 3)]
 KEYS = [k for k in KEYS if k]
-PRIMARY_MODEL = os.environ.get("DISCUSS_MODEL", "mimo-v2.5-free")
+PRIMARY_MODEL = os.environ.get("DISCUSS_MODEL", "muse-spark-1.2-contributor-free")
 
 # Known free-tier models (order = preference)
 FREE_MODELS = [
+    "muse-spark-1.2-contributor-free",
     "mimo-v2.5-free",
     "nemotron-3.5-lightning-free",
     "ling-3.0-flash-fin-free",
     "big-pickle",
     "deepseek-v4-flash-free",
-    "muse-spark-1.2-contributor-free",
     "nemotron-3-ultra-free",
     "laguna-s-2.1-free",
 ]
+
+# Load model endpoint configuration
+ENDPOINTS_CONFIG_PATH = Path(__file__).parent / "model_endpoints.json"
+
+
+def load_endpoints_config():
+    """Load model endpoint configuration from JSON file."""
+    try:
+        with open(ENDPOINTS_CONFIG_PATH) as f:
+            config = json.load(f)
+            return config.get("models", {})
+    except Exception as e:
+        print(f"::warning::failed to load endpoints config: {e}", file=sys.stderr)
+        return {}
+
+
+def get_model_endpoint(model_id):
+    """Get the endpoint type for a model. Returns 'chat_completions' or 'responses'."""
+    config = load_endpoints_config()
+    model_config = config.get(model_id, {})
+    return model_config.get("endpoint", "chat_completions")
+
+
+def get_litellm_prefix(model_id):
+    """Get the LiteLLM model prefix based on endpoint type.
+    
+    - 'chat_completions' -> 'openai/{model}' (default)
+    - 'responses' -> 'openai/responses/{model}' (forces Responses API)
+    """
+    endpoint = get_model_endpoint(model_id)
+    if endpoint == "responses":
+        return f"openai/responses/{model_id}"
+    return f"openai/{model_id}"
 
 
 def fetch_available():
@@ -48,7 +82,7 @@ def build_config(chain):
     for key_var in ("DISCUSS_KEY_1", "DISCUSS_KEY_2", "DISCUSS_KEY_3"):
         lines.append(f"  - model_name: primary")
         lines.append(f"    litellm_params:")
-        lines.append(f"      model: openai/{chain[0]}")
+        lines.append(f"      model: {get_litellm_prefix(chain[0])}")
         lines.append(f"      api_key: ${{{key_var}}}")
         lines.append(f"      api_base: ${{DISCUSS_BASE}}")
         lines.append(f"    fallbacks: [{first_fb}]")
@@ -58,7 +92,7 @@ def build_config(chain):
         next_fb = f'"fb{i+1}"' if i + 1 < len(chain) else "[]"
         lines.append(f"  - model_name: fb{i}")
         lines.append(f"    litellm_params:")
-        lines.append(f"      model: openai/{fb_model}")
+        lines.append(f"      model: {get_litellm_prefix(fb_model)}")
         lines.append(f"      api_key: ${{DISCUSS_KEY_1}}")
         lines.append(f"      api_base: ${{DISCUSS_BASE}}")
         lines.append(f"    fallbacks: [{next_fb}]")
@@ -93,13 +127,33 @@ def build_config(chain):
 
 
 def health_check(model):
-    """Quick probe: send 1-token request, return True if model responds."""
-    body = json.dumps({
-        "model": model, "max_tokens": 1,
-        "messages": [{"role": "user", "content": "hi"}],
-    }).encode()
+    """Quick probe: send 1-token request, return True if model responds.
+    
+    Uses the appropriate endpoint based on model_endpoints.json config:
+    - 'chat_completions' -> POST /chat/completions
+    - 'responses' -> POST /responses
+    """
+    endpoint = get_model_endpoint(model)
+    
+    if endpoint == "responses":
+        # Use Responses API endpoint
+        body = json.dumps({
+            "model": model,
+            "input": "hi",
+            "stream": False,
+        }).encode()
+        url = f"{API_BASE}/responses"
+    else:
+        # Use Chat Completions endpoint (default)
+        body = json.dumps({
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "hi"}],
+        }).encode()
+        url = f"{API_BASE}/chat/completions"
+    
     req = urllib.request.Request(
-        f"{API_BASE}/chat/completions",
+        url,
         data=body,
         headers={
             "Authorization": f"Bearer {KEYS[0]}",
@@ -122,8 +176,9 @@ def main():
     healthy = []
     for m in candidates:
         ok = health_check(m)
+        endpoint = get_model_endpoint(m)
         tag = "ok" if ok else "skip"
-        print(f"::debug::{m}: {tag}", file=sys.stderr)
+        print(f"::debug::{m}: {tag} (endpoint={endpoint})", file=sys.stderr)
         if ok:
             healthy.append(m)
 
