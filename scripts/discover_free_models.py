@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3  # noqa: EXE001
 """Query Zen /zen/v1/models, discover available free models, write litellm config."""
 import json, os, sys, urllib.request
 
@@ -46,8 +46,8 @@ def build_config(chain):
     # Primary group: 3 keys for load balancing
     first_fb = '"fb1"' if len(chain) > 1 else "[]"
     for key_var in ("DISCUSS_KEY_1", "DISCUSS_KEY_2", "DISCUSS_KEY_3"):
-        lines.append(f"  - model_name: primary")
-        lines.append(f"    litellm_params:")
+        lines.append("  - model_name: primary")
+        lines.append("    litellm_params:")
         lines.append(f"      model: openai/{chain[0]}")
         lines.append(f"      api_key: ${{{key_var}}}")
         lines.append(f"      api_base: ${{DISCUSS_BASE}}")
@@ -57,7 +57,7 @@ def build_config(chain):
     for i, fb_model in enumerate(chain[1:], 1):
         next_fb = f'"fb{i+1}"' if i + 1 < len(chain) else "[]"
         lines.append(f"  - model_name: fb{i}")
-        lines.append(f"    litellm_params:")
+        lines.append("    litellm_params:")
         lines.append(f"      model: openai/{fb_model}")
         lines.append(f"      api_key: ${{DISCUSS_KEY_1}}")
         lines.append(f"      api_base: ${{DISCUSS_BASE}}")
