@@ -66,6 +66,7 @@ def build_config(chain):
     # Settings
     fb_groups = ",".join(f'"fb{i}"' for i in range(1, len(chain)))
     lines.append("litellm_settings:")
+    lines.append("  verbose: true")
     lines.append("  cache: true")
     lines.append("  cache_params:")
     lines.append("    type: local")
