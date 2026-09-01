@@ -258,8 +258,8 @@ response = ""
 try:
     with open("/tmp/llm_response.md") as f:
         response = f.read().strip()
-except Exception:
-    pass
+except Exception as e:
+    print(f"[WARN] Failed to read response file: {e}", file=sys.stderr)
 
 required_marker = os.environ.get("REQUIRED_MARKER", "")
 
