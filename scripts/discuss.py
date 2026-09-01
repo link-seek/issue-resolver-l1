@@ -21,10 +21,11 @@ def get_actual_model() -> str:
     """
     try:
         result = subprocess.run(
-            ["docker", "logs", "litellm", "2>&1"],
-            capture_output=True, text=True, timeout=10
+            ["docker", "logs", "litellm"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, timeout=30
         )
-        output = result.stdout + result.stderr
+        output = result.stdout or ""
         # Match: litellm.acompletion(model=<actual_model>) <status>
         matches = re.findall(r'litellm\.acompletion\(model=([^)]+)\)', output)
         if matches:
