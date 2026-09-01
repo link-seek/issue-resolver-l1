@@ -117,11 +117,6 @@ def health_check(model):
 def main():
     available = fetch_available()
     candidates = [m for m in FREE_MODELS if m in available]
-    print(f"  Available models from API: {len(available)} total")
-    print(f"  Matching FREE_MODELS candidates: {len(candidates)}")
-    for m in FREE_MODELS:
-        status = "available" if m in available else "NOT in API"
-        print(f"    {m}: {status}")
 
     # Quick health check: skip models that don't respond
     healthy = []
@@ -129,7 +124,6 @@ def main():
         ok = health_check(m)
         tag = "ok" if ok else "skip"
         print(f"::debug::{m}: {tag}", file=sys.stderr)
-        print(f"  {m}: {tag}")
         if ok:
             healthy.append(m)
 
@@ -144,7 +138,6 @@ def main():
               file=sys.stderr)
 
     print(f"::notice::fallback chain: {' → '.join(chain)}", file=sys.stderr)
-    print(f"  Final fallback chain: {' → '.join(chain)}")
     build_config(chain)
     print("active_model=openai/primary")
 
