@@ -19,6 +19,7 @@ jobs:
           DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
         run: |
           echo "=== Available Models from OpenCode Zen ==="
+          echo "DISCUSS_BASE=$DISCUSS_BASE"
           curl -sS "$DISCUSS_BASE/models" \
             -H "Authorization: Bearer $DISCUSS_KEY_1" | \
             python3 -c "
