@@ -243,12 +243,12 @@ llm = LLM(timeout=120,
     model=os.environ["LLM_MODEL"],
     base_url=os.environ["LLM_BASE_URL"],
     api_key=os.environ["LLM_API_KEY"],
+    native_tool_calling=False,
 )
 
-# Note: Do NOT set native_tool_calling=True for LiteLLM proxy with openai/responses/ prefix.
-# LiteLLM's Responses→ChatCompletions bridge drops tool_calls (issue #17246).
-# With native_tool_calling=False (default), SDK uses prompt-based mock tool calling,
-# which works correctly because tools are embedded in the prompt text.
+# Use mock tool calling (prompt-based) instead of native tool calling.
+# LiteLLM proxy with openai/responses/ prefix drops tool_calls in Chat Completions bridge (issue #17246).
+# With native_tool_calling=False, SDK embeds tools in prompt text and parses model's text response.
 
 tools = [
     Tool(name=TerminalTool.name),
