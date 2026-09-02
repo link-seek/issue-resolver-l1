@@ -244,7 +244,6 @@ llm = LLM(timeout=120,
     base_url=os.environ["LLM_BASE_URL"],
     api_key=os.environ["LLM_API_KEY"],
     native_tool_calling=True,
-    api_mode="responses",
 )
 
 # Force-enable tool calling for litellm proxy models.
@@ -278,8 +277,29 @@ prompt += "\\n\\n## 重要：输出要求\\n请严格按上方『回复模板』
 
 conversation.send_message(prompt)
 
-# Debug: print state before run
+# Debug: test LiteLLM proxy directly with tools
 sys.stdout = old_stdout
+import json as _json
+import urllib.request as _urllib
+_test_body = _json.dumps({
+    "model": "primary",
+    "messages": [{"role": "user", "content": "Use the write_file tool to write 'hello' to /tmp/test.txt"}],
+    "tools": [{"type": "function", "function": {"name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}}],
+    "max_tokens": 200,
+}).encode()
+_req = _urllib.Request(f"{os.environ['LLM_BASE_URL']}/chat/completions", data=_test_body, headers={"Authorization": f"Bearer {os.environ['LLM_API_KEY']}", "Content-Type": "application/json"})
+try:
+    _resp = _urllib.urlopen(_req, timeout=30)
+    _resp_data = _json.loads(_resp.read())
+    print(f"[DEBUG] proxy test response: {_json.dumps(_resp_data, ensure_ascii=False)[:500]}", file=sys.stderr)
+    _choices = _resp_data.get("choices", [])
+    if _choices:
+        _msg = _choices[0].get("message", {})
+        print(f"[DEBUG] proxy test tool_calls: {_msg.get('tool_calls', 'NONE')}", file=sys.stderr)
+        print(f"[DEBUG] proxy test content: {_msg.get('content', 'NONE')[:200]}", file=sys.stderr)
+except Exception as _e:
+    print(f"[DEBUG] proxy test failed: {_e}", file=sys.stderr)
+
 print(f"[DEBUG] execution_status before run: {conversation.state.execution_status}", file=sys.stderr)
 print(f"[DEBUG] events count: {len(conversation.state.events)}", file=sys.stderr)
 print(f"[DEBUG] _function_calling_active: {llm._function_calling_active}", file=sys.stderr)
