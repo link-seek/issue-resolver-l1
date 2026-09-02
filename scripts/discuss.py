@@ -286,46 +286,30 @@ import urllib.request as _urllib
 _zen_base = os.environ.get("ZEN_API_BASE", "")
 _zen_key = os.environ.get("ZEN_API_KEY", "")
 print(f"[DEBUG] zen_base available: {bool(_zen_base)}, zen_key available: {bool(_zen_key)}", file=sys.stderr)
-if _zen_base:
-    print(f"[DEBUG] zen_base value: {_zen_base}", file=sys.stderr)
-if _zen_base and _zen_key:
-    # Try chat completions endpoint first (should work)
-    _cc_body = _json.dumps({
-        "model": "muse-spark-1.2-contributor-free",
-        "messages": [{"role": "user", "content": "Say hello"}],
-        "max_tokens": 50,
-    }).encode()
-    _req_cc = _urllib.Request(f"{_zen_base}/chat/completions", data=_cc_body, headers={"Authorization": f"Bearer {_zen_key}", "Content-Type": "application/json"})
-    try:
-        _resp_cc = _urllib.urlopen(_req_cc, timeout=30)
-        _resp_cc_data = _json.loads(_resp_cc.read())
-        print(f"[DEBUG] zen chat completions works: {str(_resp_cc_data)[:300]}", file=sys.stderr)
-    except Exception as _e:
-        print(f"[DEBUG] zen chat completions failed: {_e}", file=sys.stderr)
 
-    # Try responses endpoint
-    _resp_body = _json.dumps({
-        "model": "muse-spark-1.2-contributor-free",
-        "input": "Use the write_file tool to write hello to /tmp/test.txt",
-        "tools": [{"type": "function", "name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}],
-        "max_output_tokens": 200,
-    }).encode()
-    _req2 = _urllib.Request(f"{_zen_base}/responses", data=_resp_body, headers={"Authorization": f"Bearer {_zen_key}", "Content-Type": "application/json"})
-    try:
-        _resp2 = _urllib.urlopen(_req2, timeout=30)
-        _resp2_data = _json.loads(_resp2.read())
-        _output = _resp2_data.get("output", [])
-        _tool_calls = [item for item in _output if item.get("type") == "function_call"]
-        print(f"[DEBUG] zen responses tool_calls count: {len(_tool_calls)}", file=sys.stderr)
-        if _tool_calls:
-            print(f"[DEBUG] zen responses tool_call: {_json.dumps(_tool_calls[0], ensure_ascii=False)[:300]}", file=sys.stderr)
-        else:
-            _text_items = [item for item in _output if item.get("type") == "message"]
-            print(f"[DEBUG] zen responses text: {_json.dumps(_text_items, ensure_ascii=False)[:300]}", file=sys.stderr)
-    except Exception as _e:
-        print(f"[DEBUG] zen responses test failed: {_e}", file=sys.stderr)
-else:
-    print(f"[DEBUG] zen env not available", file=sys.stderr)
+# Test: LiteLLM proxy /v1/responses endpoint with tools
+_proxy_base = os.environ.get("LLM_BASE_URL", "")
+_proxy_key = os.environ.get("LLM_API_KEY", "")
+_resp_body = _json.dumps({
+    "model": "primary",
+    "input": "Use the write_file tool to write hello to /tmp/test.txt",
+    "tools": [{"type": "function", "name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}],
+    "max_output_tokens": 200,
+}).encode()
+_req2 = _urllib.Request(f"{_proxy_base}/responses", data=_resp_body, headers={"Authorization": f"Bearer {_proxy_key}", "Content-Type": "application/json"})
+try:
+    _resp2 = _urllib.urlopen(_req2, timeout=60)
+    _resp2_data = _json.loads(_resp2.read())
+    _output = _resp2_data.get("output", [])
+    _tool_calls = [item for item in _output if item.get("type") == "function_call"]
+    print(f"[DEBUG] proxy /responses tool_calls count: {len(_tool_calls)}", file=sys.stderr)
+    if _tool_calls:
+        print(f"[DEBUG] proxy /responses tool_call: {_json.dumps(_tool_calls[0], ensure_ascii=False)[:300]}", file=sys.stderr)
+    else:
+        _text_items = [item for item in _output if item.get("type") == "message"]
+        print(f"[DEBUG] proxy /responses text: {_json.dumps(_text_items, ensure_ascii=False)[:300]}", file=sys.stderr)
+except Exception as _e:
+    print(f"[DEBUG] proxy /responses test failed: {_e}", file=sys.stderr)
 
 print(f"[DEBUG] execution_status before run: {conversation.state.execution_status}", file=sys.stderr)
 print(f"[DEBUG] events count: {len(conversation.state.events)}", file=sys.stderr)
