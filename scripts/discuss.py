@@ -282,41 +282,32 @@ sys.stdout = old_stdout
 import json as _json
 import urllib.request as _urllib
 
-# Test 1: LiteLLM proxy with Chat Completions + tools
-_test_body = _json.dumps({
-    "model": "primary",
-    "messages": [{"role": "user", "content": "Use the write_file tool to write 'hello' to /tmp/test.txt"}],
-    "tools": [{"type": "function", "function": {"name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}}],
-    "max_tokens": 200,
-}).encode()
-_req = _urllib.Request(f"{os.environ['LLM_BASE_URL']}/chat/completions", data=_test_body, headers={"Authorization": f"Bearer {os.environ['LLM_API_KEY']}", "Content-Type": "application/json"})
-try:
-    _resp = _urllib.urlopen(_req, timeout=30)
-    _resp_data = _json.loads(_resp.read())
-    _choices = _resp_data.get("choices", [])
-    if _choices:
-        _msg = _choices[0].get("message", {})
-        print(f"[DEBUG] proxy test tool_calls: {_msg.get('tool_calls', 'NONE')}", file=sys.stderr)
-        print(f"[DEBUG] proxy test content: {str(_msg.get('content', 'NONE'))[:200]}", file=sys.stderr)
-except Exception as _e:
-    print(f"[DEBUG] proxy test failed: {_e}", file=sys.stderr)
-
-# Test 2: Direct OpenCode Zen Responses API with tools
-_zen_base = os.environ.get("DISCUSS_BASE", "https://opencode.ai/zen/v1")
-_zen_key = os.environ.get("DISCUSS_KEY_1", "")
-_resp_body = _json.dumps({
-    "model": "muse-spark-1.2-contributor-free",
-    "input": "Use the write_file tool to write 'hello' to /tmp/test.txt",
-    "tools": [{"type": "function", "name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}],
-    "max_output_tokens": 200,
-}).encode()
-_req2 = _urllib.Request(f"{_zen_base}/responses", data=_resp_body, headers={"Authorization": f"Bearer {_zen_key}", "Content-Type": "application/json"})
-try:
-    _resp2 = _urllib.urlopen(_req2, timeout=30)
-    _resp2_data = _json.loads(_resp2.read())
-    print(f"[DEBUG] zen responses test: {_json.dumps(_resp2_data, ensure_ascii=False)[:800]}", file=sys.stderr)
-except Exception as _e:
-    print(f"[DEBUG] zen responses test failed: {_e}", file=sys.stderr)
+# Test: Direct Zen Responses API with tools
+_zen_base = os.environ.get("ZEN_API_BASE", "")
+_zen_key = os.environ.get("ZEN_API_KEY", "")
+if _zen_base and _zen_key:
+    _resp_body = _json.dumps({
+        "model": "muse-spark-1.2-contributor-free",
+        "input": "Use the write_file tool to write hello to /tmp/test.txt",
+        "tools": [{"type": "function", "name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}],
+        "max_output_tokens": 200,
+    }).encode()
+    _req2 = _urllib.Request(f"{_zen_base}/responses", data=_resp_body, headers={"Authorization": f"Bearer {_zen_key}", "Content-Type": "application/json"})
+    try:
+        _resp2 = _urllib.urlopen(_req2, timeout=30)
+        _resp2_data = _json.loads(_resp2.read())
+        _output = _resp2_data.get("output", [])
+        _tool_calls = [item for item in _output if item.get("type") == "function_call"]
+        print(f"[DEBUG] zen responses tool_calls count: {len(_tool_calls)}", file=sys.stderr)
+        if _tool_calls:
+            print(f"[DEBUG] zen responses tool_call: {_json.dumps(_tool_calls[0], ensure_ascii=False)[:300]}", file=sys.stderr)
+        else:
+            _text_items = [item for item in _output if item.get("type") == "message"]
+            print(f"[DEBUG] zen responses text: {_json.dumps(_text_items, ensure_ascii=False)[:300]}", file=sys.stderr)
+    except Exception as _e:
+        print(f"[DEBUG] zen responses test failed: {_e}", file=sys.stderr)
+else:
+    print(f"[DEBUG] zen env not available: base={'yes' if _zen_base else 'no'} key={'yes' if _zen_key else 'no'}", file=sys.stderr)
 
 print(f"[DEBUG] execution_status before run: {conversation.state.execution_status}", file=sys.stderr)
 print(f"[DEBUG] events count: {len(conversation.state.events)}", file=sys.stderr)
