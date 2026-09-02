@@ -301,7 +301,8 @@ for i, ev in enumerate(conversation.state.events):
         print(f"[DEBUG]   detail: {getattr(ev, 'detail', 'N/A')}", file=sys.stderr)
 print(f"[DEBUG] captured stdout length: {len(raw)}", file=sys.stderr)
 if raw:
-    print(f"[DEBUG] captured stdout (last 500): {raw[-500:]}", file=sys.stderr)
+    print(f"[DEBUG] captured stdout (first 2000): {raw[:2000]}", file=sys.stderr)
+    print(f"[DEBUG] captured stdout (last 2000): {raw[-2000:]}", file=sys.stderr)
 
 # Read the response file written by the LLM
 response = ""
