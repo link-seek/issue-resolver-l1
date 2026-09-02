@@ -230,11 +230,6 @@ tools = [
     Tool(name=BrowserToolSet.name, params={"use_vision": False}),
 ]
 
-# Add browser tools if enabled
-if os.environ.get("AGENT_ENABLE_BROWSING", "").lower() == "true":
-    from openhands.tools.browser_use import BrowserToolSet
-    tools.append(Tool(name=BrowserToolSet.name))
-
 # CodeGraph MCP: surgical code context
 mcp_config = {
     "codegraph": {
