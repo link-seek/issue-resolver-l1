@@ -157,8 +157,6 @@ jobs:
           LLM_MODEL: ${{ steps.llm.outputs.active_model }}
           LLM_BASE_URL: http://localhost:4000/v1
           LLM_API_KEY: sk-litellm-proxy
-          ZEN_API_BASE: ${{ secrets.DISCUSS_API_BASE }}
-          ZEN_API_KEY: ${{ secrets.DISCUSS_API_KEY_1 }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           AGENT_ENABLE_BROWSING: "true"

@@ -204,25 +204,6 @@ sys.stdout = captured
 
 import litellm
 
-# Register proxy model alias so litellm's supports_function_calling() returns True.
-# Without this, litellm.get_model_info() throws "This model isn't mapped yet" for
-# the proxy model name (e.g. "openai/primary"), which causes
-# supports_function_calling() to default to False, silently disabling all tool
-# calls in the OpenHands SDK (see BerriAI/litellm#23054, OpenHands/OpenHands#8358).
-# The agent then never calls FileEditor to write /tmp/llm_response.md.
-_model_name = os.environ.get("LLM_MODEL", "")
-_alias = _model_name.split("/")[-1] if "/" in _model_name else _model_name
-if _alias and _alias not in litellm.model_cost:
-    litellm.model_cost[_alias] = litellm.model_cost.get(_alias, {
-        "supports_function_calling": True,
-        "supports_tool_choice": True,
-        "mode": "chat",
-        "input_cost_per_token": 0,
-        "output_cost_per_token": 0,
-        "max_tokens": 128000,
-    })
-    litellm.model_cost[_model_name] = litellm.model_cost[_alias]
-
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
@@ -269,33 +250,10 @@ with open(os.environ["PROMPT_FILE"]) as f:
 prompt += "\\n\\n## 重要：输出要求\\n请严格按上方『回复模板』的结构将最终回复写入文件 /tmp/llm_response.md（markdown 格式）。这是你唯一的输出方式。\\n策略：一旦掌握回答所需的基本事实，立刻先写入包含『## 结论』的完整骨架，再用 FileEditor 逐节补充细化。绝不要把写文件留到最后一步——若工具调用轮次用尽而文件尚未创建，本次回复将作废。标题层级不可改动、章节不可省略，尖括号占位符必须替换为真实内容；禁止写入思考过程、工具调用结果、内部推理、Token 计数或 Agent Action 日志。不符合模板结构的回复会被系统拒绝。"
 
 conversation.send_message(prompt)
-
-# Debug: print state before run
-sys.stdout = old_stdout
-print(f"[DEBUG] execution_status before run: {conversation.state.execution_status}", file=sys.stderr)
-print(f"[DEBUG] events count: {len(conversation.state.events)}", file=sys.stderr)
-print(f"[DEBUG] prompt length: {len(prompt)} chars", file=sys.stderr)
-sys.stdout = captured
-
 conversation.run()
 
 sys.stdout = old_stdout
 raw = captured.getvalue()
-print(f"[DEBUG] execution_status after run: {conversation.state.execution_status}", file=sys.stderr)
-print(f"[DEBUG] events count after run: {len(conversation.state.events)}", file=sys.stderr)
-for i, ev in enumerate(conversation.state.events):
-    print(f"[DEBUG] event[{i}]: type={type(ev).__name__}, source={getattr(ev, 'source', 'N/A')}", file=sys.stderr)
-    if hasattr(ev, 'llm_message') and ev.llm_message:
-        content = getattr(ev.llm_message, 'content', None)
-        if content:
-            text = str(content)[:500] if not isinstance(content, list) else str([getattr(c, 'text', str(c))[:300] for c in content[:3]])
-            print(f"[DEBUG]   content: {text}", file=sys.stderr)
-    if hasattr(ev, 'detail'):
-        print(f"[DEBUG]   detail: {getattr(ev, 'detail', 'N/A')}", file=sys.stderr)
-print(f"[DEBUG] captured stdout length: {len(raw)}", file=sys.stderr)
-if raw:
-    print(f"[DEBUG] captured stdout (first 2000): {raw[:2000]}", file=sys.stderr)
-    print(f"[DEBUG] captured stdout (last 2000): {raw[-2000:]}", file=sys.stderr)
 
 # Read the response file written by the LLM
 response = ""
