@@ -275,40 +275,8 @@ prompt += "\\n\\n## 重要：输出要求\\n请严格按上方『回复模板』
 
 conversation.send_message(prompt)
 
-# Debug: test LiteLLM proxy directly with tools
+# Debug: print state before run
 sys.stdout = old_stdout
-import json as _json
-import urllib.request as _urllib
-
-# Test: Direct Zen Responses API with tools
-_zen_base = os.environ.get("ZEN_API_BASE", "")
-_zen_key = os.environ.get("ZEN_API_KEY", "")
-print(f"[DEBUG] zen_base available: {bool(_zen_base)}, zen_key available: {bool(_zen_key)}", file=sys.stderr)
-
-# Test: LiteLLM proxy /v1/responses endpoint with tools
-_proxy_base = os.environ.get("LLM_BASE_URL", "")
-_proxy_key = os.environ.get("LLM_API_KEY", "")
-_resp_body = _json.dumps({
-    "model": "primary",
-    "input": "Use the write_file tool to write hello to /tmp/test.txt",
-    "tools": [{"type": "function", "name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}],
-    "max_output_tokens": 200,
-}).encode()
-_req2 = _urllib.Request(f"{_proxy_base}/responses", data=_resp_body, headers={"Authorization": f"Bearer {_proxy_key}", "Content-Type": "application/json"})
-try:
-    _resp2 = _urllib.urlopen(_req2, timeout=60)
-    _resp2_data = _json.loads(_resp2.read())
-    _output = _resp2_data.get("output", [])
-    _tool_calls = [item for item in _output if item.get("type") == "function_call"]
-    print(f"[DEBUG] proxy /responses tool_calls count: {len(_tool_calls)}", file=sys.stderr)
-    if _tool_calls:
-        print(f"[DEBUG] proxy /responses tool_call: {_json.dumps(_tool_calls[0], ensure_ascii=False)[:300]}", file=sys.stderr)
-    else:
-        _text_items = [item for item in _output if item.get("type") == "message"]
-        print(f"[DEBUG] proxy /responses text: {_json.dumps(_text_items, ensure_ascii=False)[:300]}", file=sys.stderr)
-except Exception as _e:
-    print(f"[DEBUG] proxy /responses test failed: {_e}", file=sys.stderr)
-
 print(f"[DEBUG] execution_status before run: {conversation.state.execution_status}", file=sys.stderr)
 print(f"[DEBUG] events count: {len(conversation.state.events)}", file=sys.stderr)
 print(f"[DEBUG] prompt length: {len(prompt)} chars", file=sys.stderr)
