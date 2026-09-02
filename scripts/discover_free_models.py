@@ -11,6 +11,7 @@ PRIMARY_MODEL = os.environ.get("DISCUSS_MODEL", "muse-spark-1.2-contributor-free
 # Known free-tier models (order = preference)
 FREE_MODELS = [
     "muse-spark-1.2-contributor-free",
+    "hy3-free",
     "mimo-v2.5-free",
     "nemotron-3.5-lightning-free",
     "ling-3.0-flash-fin-free",
