@@ -311,7 +311,6 @@ except Exception as _e:
 
 print(f"[DEBUG] execution_status before run: {conversation.state.execution_status}", file=sys.stderr)
 print(f"[DEBUG] events count: {len(conversation.state.events)}", file=sys.stderr)
-print(f"[DEBUG] _function_calling_active: {llm._function_calling_active}", file=sys.stderr)
 sys.stdout = captured
 
 conversation.run()
