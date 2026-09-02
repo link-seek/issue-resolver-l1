@@ -16,10 +16,6 @@
       "endpoint": "chat_completions",
       "sdk": "@ai-sdk/openai-compatible"
     },
-    "big-pickle": {
-      "endpoint": "chat_completions",
-      "sdk": "@ai-sdk/openai-compatible"
-    },
     "deepseek-v4-flash-free": {
       "endpoint": "chat_completions",
       "sdk": "@ai-sdk/openai-compatible"
