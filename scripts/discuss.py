@@ -285,7 +285,25 @@ import urllib.request as _urllib
 # Test: Direct Zen Responses API with tools
 _zen_base = os.environ.get("ZEN_API_BASE", "")
 _zen_key = os.environ.get("ZEN_API_KEY", "")
+print(f"[DEBUG] zen_base available: {bool(_zen_base)}, zen_key available: {bool(_zen_key)}", file=sys.stderr)
+if _zen_base:
+    print(f"[DEBUG] zen_base value: {_zen_base}", file=sys.stderr)
 if _zen_base and _zen_key:
+    # Try chat completions endpoint first (should work)
+    _cc_body = _json.dumps({
+        "model": "muse-spark-1.2-contributor-free",
+        "messages": [{"role": "user", "content": "Say hello"}],
+        "max_tokens": 50,
+    }).encode()
+    _req_cc = _urllib.Request(f"{_zen_base}/chat/completions", data=_cc_body, headers={"Authorization": f"Bearer {_zen_key}", "Content-Type": "application/json"})
+    try:
+        _resp_cc = _urllib.urlopen(_req_cc, timeout=30)
+        _resp_cc_data = _json.loads(_resp_cc.read())
+        print(f"[DEBUG] zen chat completions works: {str(_resp_cc_data)[:300]}", file=sys.stderr)
+    except Exception as _e:
+        print(f"[DEBUG] zen chat completions failed: {_e}", file=sys.stderr)
+
+    # Try responses endpoint
     _resp_body = _json.dumps({
         "model": "muse-spark-1.2-contributor-free",
         "input": "Use the write_file tool to write hello to /tmp/test.txt",
@@ -307,7 +325,7 @@ if _zen_base and _zen_key:
     except Exception as _e:
         print(f"[DEBUG] zen responses test failed: {_e}", file=sys.stderr)
 else:
-    print(f"[DEBUG] zen env not available: base={'yes' if _zen_base else 'no'} key={'yes' if _zen_key else 'no'}", file=sys.stderr)
+    print(f"[DEBUG] zen env not available", file=sys.stderr)
 
 print(f"[DEBUG] execution_status before run: {conversation.state.execution_status}", file=sys.stderr)
 print(f"[DEBUG] events count: {len(conversation.state.events)}", file=sys.stderr)
