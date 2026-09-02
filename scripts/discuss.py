@@ -202,6 +202,27 @@ captured = io.StringIO()
 old_stdout = sys.stdout
 sys.stdout = captured
 
+import litellm
+
+# Register proxy model alias so litellm's supports_function_calling() returns True.
+# Without this, litellm.get_model_info() throws "This model isn't mapped yet" for
+# the proxy model name (e.g. "openai/primary"), which causes
+# supports_function_calling() to default to False, silently disabling all tool
+# calls in the OpenHands SDK (see BerriAI/litellm#23054, OpenHands/OpenHands#8358).
+# The agent then never calls FileEditor to write /tmp/llm_response.md.
+_model_name = os.environ.get("LLM_MODEL", "")
+_alias = _model_name.split("/")[-1] if "/" in _model_name else _model_name
+if _alias and _alias not in litellm.model_cost:
+    litellm.model_cost[_alias] = litellm.model_cost.get(_alias, {
+        "supports_function_calling": True,
+        "supports_tool_choice": True,
+        "mode": "chat",
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "max_tokens": 128000,
+    })
+    litellm.model_cost[_model_name] = litellm.model_cost[_alias]
+
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
