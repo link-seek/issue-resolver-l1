@@ -29,8 +29,8 @@
       "sdk": "@ai-sdk/openai-compatible"
     },
     "muse-spark-1.2-contributor-free": {
-      "endpoint": "chat_completions",
-      "sdk": "@ai-sdk/openai-compatible"
+      "endpoint": "responses",
+      "sdk": "@ai-sdk/openai"
     },
     "hy3-free": {
       "endpoint": "chat_completions",

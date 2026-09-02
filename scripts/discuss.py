@@ -244,6 +244,7 @@ llm = LLM(timeout=120,
     base_url=os.environ["LLM_BASE_URL"],
     api_key=os.environ["LLM_API_KEY"],
     native_tool_calling=True,
+    api_mode="responses",
 )
 
 # Force-enable tool calling for litellm proxy models.
