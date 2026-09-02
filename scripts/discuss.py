@@ -218,7 +218,7 @@ except ImportError:
 
 from openhands.tools.browser_use import BrowserToolSet
 
-llm = LLM(
+llm = LLM(timeout=120,
     model=os.environ["LLM_MODEL"],
     base_url=os.environ["LLM_BASE_URL"],
     api_key=os.environ["LLM_API_KEY"],
