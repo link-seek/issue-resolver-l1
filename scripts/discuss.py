@@ -293,7 +293,7 @@ for i, ev in enumerate(conversation.state.events):
     if hasattr(ev, 'llm_message') and ev.llm_message:
         content = getattr(ev.llm_message, 'content', None)
         if content:
-            text = str(content)[:200] if not isinstance(content, list) else str([getattr(c, 'text', str(c))[:100] for c in content[:2]])
+            text = str(content)[:500] if not isinstance(content, list) else str([getattr(c, 'text', str(c))[:300] for c in content[:3]])
             print(f"[DEBUG]   content: {text}", file=sys.stderr)
     if hasattr(ev, 'detail'):
         print(f"[DEBUG]   detail: {getattr(ev, 'detail', 'N/A')}", file=sys.stderr)
