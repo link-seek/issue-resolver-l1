@@ -14,7 +14,6 @@ FREE_MODELS = [
     "mimo-v2.5-free",
     "nemotron-3.5-lightning-free",
     "ling-3.0-flash-fin-free",
-    "big-pickle",
     "deepseek-v4-flash-free",
     "nemotron-3-ultra-free",
     "laguna-s-2.1-free",
