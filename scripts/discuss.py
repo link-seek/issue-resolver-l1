@@ -243,7 +243,14 @@ llm = LLM(timeout=120,
     model=os.environ["LLM_MODEL"],
     base_url=os.environ["LLM_BASE_URL"],
     api_key=os.environ["LLM_API_KEY"],
+    native_tool_calling=True,
 )
+
+# Force-enable tool calling for litellm proxy models.
+# OpenHands SDK checks FUNCTION_CALLING_SUPPORTED_MODELS or litellm.supports_function_calling(),
+# both return False for proxy model names like "openai/primary".
+# See: BerriAI/litellm#23054, OpenHands/OpenHands#8358
+llm._function_calling_active = True
 
 tools = [
     Tool(name=TerminalTool.name),
