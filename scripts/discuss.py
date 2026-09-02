@@ -290,6 +290,18 @@ sys.stdout = old_stdout
 raw = captured.getvalue()
 print(f"[DEBUG] execution_status after run: {conversation.state.execution_status}", file=sys.stderr)
 print(f"[DEBUG] events count after run: {len(conversation.state.events)}", file=sys.stderr)
+for i, ev in enumerate(conversation.state.events):
+    print(f"[DEBUG] event[{i}]: type={type(ev).__name__}, source={getattr(ev, 'source', 'N/A')}", file=sys.stderr)
+    if hasattr(ev, 'llm_message') and ev.llm_message:
+        content = getattr(ev.llm_message, 'content', None)
+        if content:
+            text = str(content)[:200] if not isinstance(content, list) else str([getattr(c, 'text', str(c))[:100] for c in content[:2]])
+            print(f"[DEBUG]   content: {text}", file=sys.stderr)
+    if hasattr(ev, 'detail'):
+        print(f"[DEBUG]   detail: {getattr(ev, 'detail', 'N/A')}", file=sys.stderr)
+print(f"[DEBUG] captured stdout length: {len(raw)}", file=sys.stderr)
+if raw:
+    print(f"[DEBUG] captured stdout (last 500): {raw[-500:]}", file=sys.stderr)
 
 # Read the response file written by the LLM
 response = ""
