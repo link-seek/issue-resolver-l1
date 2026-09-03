@@ -12,32 +12,6 @@ import urllib.request
 from templates import get_template
 
 
-def get_actual_model() -> str:
-    """Extract actual model name from litellm Docker logs.
-
-    Parses log lines like:
-        litellm.acompletion(model=openai/mimo-v2.5-free) 200 OK
-    Returns the actual model name (without openai/ prefix), or empty string.
-    """
-    try:
-        result = subprocess.run(
-            ["docker", "logs", "litellm"],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, timeout=30
-        )
-        output = result.stdout or ""
-        # Match: litellm.acompletion(model=<actual_model>) <status>
-        matches = re.findall(r'litellm\.acompletion\(model=([^)]+)\)', output)
-        if matches:
-            model = matches[-1].strip()
-            # Strip openai/ prefix for display
-            model = model.removeprefix("openai/")
-            return model
-    except Exception as e:
-        print(f"[WARN] Failed to get actual model: {e}", file=sys.stderr)
-    return ""
-
-
 def gh_graphql(token: str, query: str, variables: dict = None) -> dict:
     url = "https://api.github.com/graphql"
     body = json.dumps({"query": query, "variables": variables or {}})
@@ -222,7 +196,7 @@ if "muse-spark" not in RESPONSES_API_MODELS:
 # in a tool message, and adds an fc_ prefix to call_id that doesn't match the
 # function_call id. Both issues cause 400 errors from the Responses API.
 # Fix: merge all TextContent into a single function_call_output with original call_id.
-from openhands.sdk.llm.message import Message, TextContent, ImageContent
+from openhands.sdk.llm.message import Message, TextContent
 _orig_to_responses_dict = Message.to_responses_dict
 def _patched_to_responses_dict(self, *, vision_enabled=False):
     if self.role != "tool" or self.tool_call_id is None:
@@ -423,16 +397,7 @@ def main():
     discussion_node_id = os.environ.get("DISCUSSION_NODE_ID", "")
     repo_name = os.environ.get("REPO_NAME", "")
     discuss_mode = os.environ.get("DISCUSS_MODE", "discuss")
-    llm_model = os.environ.get("LLM_MODEL", "openai/primary")
-    llm_base_url = os.environ.get("LLM_BASE_URL", "")
-    llm_api_key = os.environ.get("LLM_API_KEY", "")
-    _ = (llm_model, llm_base_url, llm_api_key)  # used via env in subprocess
-
-    model_display_map = {
-        "openai/primary": "GLM",
-        "openai/secondary": "DeepSeek-V4-Flash",
-    }
-    model_display_name = os.environ.get("LLM_MODEL_DISPLAY") or model_display_map.get(llm_model, llm_model)
+    model_display_name = os.environ.get("LLM_MODEL_DISPLAY") or os.environ.get("LLM_MODEL", "unknown")
 
     if not discussion_node_id:
         print("No DISCUSSION_NODE_ID set")
@@ -491,12 +456,6 @@ def main():
     print("Sending to LLM...")
     llm_response = run_llm(prompt, llm_env)
     print(f"Response length: {len(llm_response)} chars")
-
-    # Try to detect actual model from litellm logs (overrides configured model name)
-    actual_model = get_actual_model()
-    if actual_model:
-        model_display_name = actual_model
-        print(f"Actual model used: {model_display_name}")
 
     if discuss_mode == "to-issue":
         issue_title, issue_labels, issue_body = parse_issue_response(llm_response)
