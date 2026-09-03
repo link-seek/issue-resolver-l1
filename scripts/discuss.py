@@ -217,6 +217,27 @@ from openhands.sdk.llm.utils.model_features import RESPONSES_API_MODELS
 if "muse-spark" not in RESPONSES_API_MODELS:
     RESPONSES_API_MODELS.append("muse-spark")
 
+# Monkey-patch: fix Duplicate function_call_output bug in Responses API.
+# The SDK's to_responses_dict creates one function_call_output per TextContent
+# in a tool message. If a tool result has multiple TextContent items, this
+# produces duplicate call_ids which the Responses API rejects.
+# Fix: merge all TextContent into a single function_call_output.
+from openhands.sdk.llm.message import Message, TextContent, ImageContent
+_orig_to_responses_dict = Message.to_responses_dict
+def _patched_to_responses_dict(self, *, vision_enabled=False):
+    if self.role != "tool" or self.tool_call_id is None:
+        return _orig_to_responses_dict(self, vision_enabled=vision_enabled)
+    resp_call_id = (
+        self.tool_call_id
+        if str(self.tool_call_id).startswith("fc")
+        else f"fc_{self.tool_call_id}"
+    )
+    text_parts = [c.text for c in self.content if isinstance(c, TextContent) and c.text]
+    if text_parts:
+        return [{"type": "function_call_output", "call_id": resp_call_id, "output": "\\n".join(text_parts)}]
+    return []
+Message.to_responses_dict = _patched_to_responses_dict
+
 # Monkey-patch: skip MCP handler registration in BrowserUseServer.
 # openhands-tools never serves MCP — it calls browser methods directly.
 # The _setup_handlers() call uses @server.list_tools() which breaks with
