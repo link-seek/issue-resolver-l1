@@ -208,6 +208,15 @@ from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
+
+# Monkey-patch: add muse-spark to RESPONSES_API_MODELS so OpenHands SDK
+# routes it through the native Responses API (litellm.responses()) instead
+# of the Chat Completions bridge (litellm.completion()). The Chat Completions
+# bridge drops tool_calls for Responses API models (LiteLLM issue #17246).
+from openhands.sdk.llm.utils.model_features import RESPONSES_API_MODELS
+if "muse-spark" not in RESPONSES_API_MODELS:
+    RESPONSES_API_MODELS.append("muse-spark")
+
 # Monkey-patch: skip MCP handler registration in BrowserUseServer.
 # openhands-tools never serves MCP — it calls browser methods directly.
 # The _setup_handlers() call uses @server.list_tools() which breaks with

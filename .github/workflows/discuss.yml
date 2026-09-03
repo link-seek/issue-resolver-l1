@@ -14,11 +14,11 @@ on:
         default: 'issue'
         type: string
     secrets:
-      LLM_API_KEY_1:
+      DISCUSS_API_KEY_1:
         required: true
-      LLM_API_KEY_2:
+      DISCUSS_API_BASE:
         required: true
-      LLM_API_KEY_3:
+      DISCUSS_MODEL:
         required: true
       APP_ID:
         required: true
@@ -116,47 +116,13 @@ jobs:
           codegraph init 2>&1 || echo "CodeGraph init failed (non-fatal)"
           codegraph status 2>&1 | head -10 || true
 
-      - name: Setup LiteLLM proxy
-        id: llm
-        shell: bash
-        env:
-          DISCUSS_KEY_1: ${{ secrets.DISCUSS_API_KEY_1 }}
-          DISCUSS_KEY_2: ${{ secrets.DISCUSS_API_KEY_2 }}
-          DISCUSS_KEY_3: ${{ secrets.DISCUSS_API_KEY_3 }}
-          DISCUSS_BASE: ${{ secrets.DISCUSS_API_BASE }}
-          DISCUSS_MODEL: ${{ secrets.DISCUSS_MODEL }}
-          DISCUSS_FALLBACK_MODEL: ${{ secrets.DISCUSS_FALLBACK_MODEL }}
-        run: |
-          python $GITHUB_WORKSPACE/issue-resolver-scripts/scripts/discover_free_models.py
-          echo "active_model=openai/primary" >> $GITHUB_OUTPUT
-
-          docker run -d --name litellm \
-            -p 4000:4000 \
-            -v /tmp/litellm_config.yaml:/app/config.yaml \
-            -e LITELLM_LOG=DEBUG \
-            ghcr.io/berriai/litellm:main-latest \
-            --config /app/config.yaml --port 4000 --host 0.0.0.0
-
-          echo "Waiting for LiteLLM proxy to be ready..."
-          for i in $(seq 1 60); do
-            if curl -sf -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health > /dev/null 2>&1; then
-              echo "LiteLLM proxy ready (attempt $i)"
-              curl -s -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::LiteLLM proxy failed to start"
-          docker logs litellm 2>&1 | tail -50
-          exit 1
-
       - name: Run Discussion Agent
         shell: bash
         working-directory: target-repo
         env:
-          LLM_MODEL: ${{ steps.llm.outputs.active_model }}
-          LLM_BASE_URL: http://localhost:4000/v1
-          LLM_API_KEY: sk-litellm-proxy
+          LLM_MODEL: openai/${{ secrets.DISCUSS_MODEL }}
+          LLM_BASE_URL: ${{ secrets.DISCUSS_API_BASE }}
+          LLM_API_KEY: ${{ secrets.DISCUSS_API_KEY_1 }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           AGENT_ENABLE_BROWSING: "true"
