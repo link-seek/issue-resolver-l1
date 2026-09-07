@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 from templates import get_template
@@ -385,11 +386,22 @@ def main():
     logger = get_logger(__name__)
     logger.info("Creating OpenHands agent with LocalWorkspace...")
 
+    # Session passthrough: OpenCode clients send X-Session-Id for non-opencode
+    # providers; the Zen gateway requires it (400 MissingSessionID without it)
+    # and uses it for usage attribution. CI has no OpenCode runtime, so mint
+    # one per run (traceable via GITHUB_RUN_ID, random fallback otherwise).
+    _run_tag = os.environ.get("GITHUB_RUN_ID") or uuid.uuid4().hex[:12]
+    _llm_session_id = os.environ.get("LLM_SESSION_ID") or f"ci-{_run_tag}"
     llm_config = {
         "model": model,
         "api_key": api_key,
         "usage_id": "issue_resolver",
         "drop_params": False,
+        "extra_headers": {
+            "X-Session-Id": _llm_session_id,
+            "x-session-affinity": _llm_session_id,
+            "User-Agent": "opencode/1.18.27",
+        },
     }
     if base_url:
         llm_config["base_url"] = base_url
