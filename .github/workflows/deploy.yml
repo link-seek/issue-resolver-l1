@@ -532,11 +532,51 @@ jobs:
           echo -e "$FAILURES" >> $GITHUB_OUTPUT
           echo "FAIL_EOF" >> $GITHUB_OUTPUT
 
+      - name: Resolve E2E ref from image tag
+        id: e2e-ref
+        run: |
+          TAG="${{ inputs.image-tag }}"
+          # tag 格式: <timestamp>-<40hex commit sha>；E2E 必须测部署的 commit，
+          # 不能测 main HEAD（否则新测试 vs 旧包必挂，如 deploy-broken #503）。
+          SHA="$(echo "$TAG" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)"
+          if [ -n "$SHA" ]; then
+            echo "ref=$SHA" >> $GITHUB_OUTPUT
+            echo "E2E will test commit $SHA (from image tag)"
+          else
+            echo "ref=" >> $GITHUB_OUTPUT
+            echo "No SHA in image tag; E2E falls back to default branch"
+          fi
+
+      - name: Wait for frontend CDN to match OSS origin
+        if: inputs.oss-bucket != ''
+        run: |
+          FE_URL="${{ inputs.frontend-url }}"
+          ORIGIN="https://${{ inputs.oss-bucket }}.${{ inputs.oss-region }}/index.html"
+          entry_hash() { curl -sf --connect-timeout 10 --max-time 30 "$1" 2>/dev/null | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -n 1; }
+          echo "Waiting for CDN ($FE_URL) to serve the OSS origin bundle..."
+          for i in $(seq 1 30); do
+            OSS_HASH="$(entry_hash "$ORIGIN")"
+            if [ -z "$OSS_HASH" ]; then
+              echo "WARNING: OSS origin unreachable; skipping CDN gate"
+              exit 0
+            fi
+            CDN_HASH="$(entry_hash "$FE_URL/index.html")"
+            echo "attempt $i: cdn=${CDN_HASH:-none} origin=$OSS_HASH"
+            if [ "$CDN_HASH" = "$OSS_HASH" ]; then
+              echo "Frontend CDN is fresh ($CDN_HASH)"
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::Frontend CDN did not converge to OSS origin within 10 minutes"
+          exit 1
+
       - name: Checkout consumer repo for E2E
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.consumer-repo }}
           token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ steps.e2e-ref.outputs.ref }}
 
       - name: Install dependencies
         working-directory: frontend
@@ -654,7 +694,9 @@ jobs:
           ak_id       = os.environ['AK_ID']
           ak_secret   = os.environ['AK_SECRET']
 
-          endpoint = f'https://{bucket_name}.{region}'
+          # oss2.Bucket 会把 bucket_name virtual-host 到 endpoint 上；
+          # endpoint 里若已带 bucket 会拼出双 bucket 名导致 DNS 失败。
+          endpoint = f'https://{region}'
           auth     = oss2.Auth(ak_id, ak_secret)
           bucket   = oss2.Bucket(auth, endpoint, bucket_name)
 

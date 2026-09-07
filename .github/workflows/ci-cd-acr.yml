@@ -162,6 +162,10 @@ jobs:
             -i "${{ secrets.ALIYUN_ACCESS_KEY_ID }}" \
             -k "${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}"
           ossutil cp -rf frontend/dist/ "oss://${{ inputs.oss-bucket }}/" --acl public-read
+          # index.html 必须每次回源：否则 CDN 会在发布后继续 serving 旧入口，
+          # 导致 smoke 用新测试测旧包（deploy-broken #503 同类事故）。
+          # 带 hash 的 assets 文件名不可变，长缓存无影响，只锁 index.html。
+          ossutil set-meta "oss://${{ inputs.oss-bucket }}/index.html" Cache-Control:no-cache --update
 
   create-build-issue:
     name: Create Issue on Build Failure
