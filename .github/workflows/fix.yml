@@ -484,7 +484,7 @@ jobs:
             echo "Quick-fix did not push changes (attempt $NEW_COUNT/5)"
           fi
 
-      - name: Setup LiteLLM proxy
+      - name: Select LLM endpoint (direct, no proxy)
         id: llm
         if: |
           (steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false') &&
@@ -500,79 +500,35 @@ jobs:
           SECONDARY_BASE: ${{ secrets.SECONDARY_API_BASE }}
           SECONDARY_MODEL: ${{ secrets.SECONDARY_MODEL }}
         run: |
+          # Direct gateway calls, same pattern as discuss.yml: the SDK talks to
+          # the provider endpoint itself — no local LiteLLM proxy in between
+          # (fewer hops that can strip headers, no unpinned main-latest image).
           HOUR_BEIJING=$(( (10#$(date -u +%H) + 8) % 24 ))
           if [ "$HOUR_BEIJING" -ge 9 ] && [ "$HOUR_BEIJING" -lt 18 ]; then
-            echo "Beijing $HOUR_BEIJING:00 — working hours, using primary model"
-            echo "active_model=openai/primary" >> $GITHUB_OUTPUT
+            echo "Beijing $HOUR_BEIJING:00 — working hours, using primary model (direct)"
+            # spread load across the 3 primary keys by run id (replaces proxy least-busy)
+            IDX=$(( GITHUB_RUN_ID % 3 ))
+            if [ "$IDX" -eq 0 ]; then ACTIVE_KEY="$PRIMARY_KEY_1";
+            elif [ "$IDX" -eq 1 ]; then ACTIVE_KEY="$PRIMARY_KEY_2";
+            else ACTIVE_KEY="$PRIMARY_KEY_3"; fi
+            echo "model=openai/${PRIMARY_MODEL}" >> $GITHUB_OUTPUT
+            echo "base=${PRIMARY_BASE}" >> $GITHUB_OUTPUT
+            echo "key=${ACTIVE_KEY}" >> $GITHUB_OUTPUT
           else
-            echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model"
-            echo "active_model=openai/secondary" >> $GITHUB_OUTPUT
+            echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model (direct)"
+            echo "model=openai/${SECONDARY_MODEL}" >> $GITHUB_OUTPUT
+            echo "base=${SECONDARY_BASE}" >> $GITHUB_OUTPUT
+            echo "key=${SECONDARY_KEY}" >> $GITHUB_OUTPUT
           fi
-          cat > /tmp/litellm_config.yaml << EOF
-          model_list:
-            - model_name: primary
-              litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_1}
-                api_base: ${PRIMARY_BASE}
-            - model_name: primary
-              litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_2}
-                api_base: ${PRIMARY_BASE}
-            - model_name: primary
-              litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_3}
-                api_base: ${PRIMARY_BASE}
-            - model_name: secondary
-              litellm_params:
-                model: openai/${SECONDARY_MODEL}
-                api_key: ${SECONDARY_KEY}
-                api_base: ${SECONDARY_BASE}
-          EOF
-          cat >> /tmp/litellm_config.yaml << 'EOF'
-          litellm_settings:
-            cache: true
-            cache_params:
-              type: local
-          router_settings:
-            routing_strategy: least-busy
-            num_retries: 3
-            allowed_fails: 3
-            request_timeout: 120
-          general_settings:
-            master_key: sk-litellm-proxy
-            drop_params: false
-          EOF
-
-          docker run -d --name litellm \
-            -p 4000:4000 \
-            -v /tmp/litellm_config.yaml:/app/config.yaml \
-            ghcr.io/berriai/litellm:main-latest \
-            --config /app/config.yaml --port 4000 --host 0.0.0.0
-
-          echo "Waiting for LiteLLM proxy to be ready..."
-          for i in $(seq 1 60); do
-            if curl -sf -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health > /dev/null 2>&1; then
-              echo "LiteLLM proxy ready (attempt $i)"
-              curl -s -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::LiteLLM proxy failed to start"
-          docker logs litellm 2>&1 | tail -50
-          exit 1
 
       - name: Run fix (issue mode)
         if: ${{ steps.context.outputs.mode == 'issue' }}
         shell: bash
         working-directory: target-repo
         env:
-          LLM_MODEL: ${{ steps.llm.outputs.active_model }}
-          LLM_BASE_URL: http://localhost:4000/v1
-          LLM_API_KEY: sk-litellm-proxy
+          LLM_MODEL: ${{ steps.llm.outputs.model }}
+          LLM_BASE_URL: ${{ steps.llm.outputs.base }}
+          LLM_API_KEY: ${{ steps.llm.outputs.key }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_NUMBER: ${{ steps.context.outputs.target_number }}
           REPO_NAME: ${{ github.repository }}
@@ -729,9 +685,9 @@ jobs:
         shell: bash
         working-directory: target-repo
         env:
-          LLM_MODEL: ${{ steps.llm.outputs.active_model }}
-          LLM_BASE_URL: http://localhost:4000/v1
-          LLM_API_KEY: sk-litellm-proxy
+          LLM_MODEL: ${{ steps.llm.outputs.model }}
+          LLM_BASE_URL: ${{ steps.llm.outputs.base }}
+          LLM_API_KEY: ${{ steps.llm.outputs.key }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           REVIEW_CONTEXT_FILE: /tmp/fix_context.txt
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
