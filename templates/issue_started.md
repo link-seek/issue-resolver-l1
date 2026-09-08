@@ -1,1 +1,1 @@
-🤖 OpenHands 智能体已开始处理此 Issue，使用 DeepSeek-V4-Flash 模型。
+🤖 OpenHands 智能体已开始处理此 Issue，使用 {model_name} 模型。

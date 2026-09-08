@@ -489,6 +489,7 @@ def main():
                 issue_title=issue_title,
                 issue_url=issue_url,
                 issue_labels=", ".join(issue_labels),
+                model_name=model_display_name,
             )
 
             try:

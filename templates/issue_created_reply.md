@@ -6,4 +6,4 @@
 **状态**: `fix-me` 已自动触发，auto-fix 流程已启动
 
 ---
-🤖 由 DeepSeek-V4-Flash 生成
+🤖 由 {model_name} 生成
