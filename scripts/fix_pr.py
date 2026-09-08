@@ -554,6 +554,7 @@ ocr review --audience agent 2>&1
         "extra_headers": {
             "X-Session-Id": _llm_session_id,
             "x-session-affinity": _llm_session_id,
+            "x-opencode-session": _llm_session_id,
             "User-Agent": "opencode/1.18.27",
         },
     }
