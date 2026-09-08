@@ -504,6 +504,64 @@ jobs:
           echo "key=${MUSE_KEY}" >> $GITHUB_OUTPUT
           echo "Direct muse-spark selected (model+base masked in logs by Actions)"
 
+      - name: Start E2E services (hot-reload env for agent verification)
+        id: start-e2e
+        if: |
+          (steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false') &&
+          steps.quick-fix.outputs.pushed != 'true'
+        shell: bash
+        working-directory: target-repo
+        run: |
+          if [ ! -f docker-compose.dev.yml ]; then
+            echo "No docker-compose.dev.yml found, trying docker-compose.ci.yml"
+            if [ ! -f docker-compose.ci.yml ]; then
+              echo "No docker-compose file found, skipping E2E services"
+              echo "e2e_ready=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            COMPOSE_FILE=docker-compose.ci.yml
+          else
+            COMPOSE_FILE=docker-compose.dev.yml
+          fi
+          echo "Starting E2E services with $COMPOSE_FILE (hot-reload)..."
+          docker compose -f "$COMPOSE_FILE" up -d 2>&1 || true
+          # Wait for backend health (first cargo build may take 10+ minutes)
+          for i in $(seq 1 180); do
+            if curl -sf http://localhost:8080/health 2>/dev/null; then
+              echo "Backend healthy (attempt $i)"
+              break
+            fi
+            sleep 5
+          done
+          # Wait for frontend health
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:80 2>/dev/null || curl -sf http://localhost:80/health 2>/dev/null; then
+              echo "Frontend healthy (attempt $i)"
+              break
+            fi
+            sleep 3
+          done
+          echo "e2e_ready=true" >> $GITHUB_OUTPUT
+          echo "E2E services ready: backend=http://localhost:8080 frontend=http://localhost:80"
+          echo "compose_file=$COMPOSE_FILE" >> $GITHUB_OUTPUT
+
+      - name: Install Playwright
+        if: |
+          (steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false') &&
+          steps.quick-fix.outputs.pushed != 'true'
+        shell: bash
+        working-directory: target-repo/frontend
+        run: |
+          if [ ! -f package.json ]; then
+            echo "No frontend/package.json, skipping Playwright install"
+            exit 0
+          fi
+          echo "Installing frontend dependencies..."
+          npm install 2>&1 | tail -5
+          echo "Installing Playwright browsers..."
+          npx playwright install --with-deps 2>&1 | tail -5
+          echo "Playwright installed"
+
       - name: Run fix (issue mode)
         if: ${{ steps.context.outputs.mode == 'issue' }}
         shell: bash
@@ -605,64 +663,6 @@ jobs:
           echo "fail_count=$FAIL_COUNT" >> $GITHUB_OUTPUT
           echo "---"
           cat /tmp/e2e_failures.txt | head -20
-
-      - name: Start E2E services (hot-reload env for agent verification)
-        id: start-e2e
-        if: |
-          (steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false') &&
-          steps.quick-fix.outputs.pushed != 'true'
-        shell: bash
-        working-directory: target-repo
-        run: |
-          if [ ! -f docker-compose.dev.yml ]; then
-            echo "No docker-compose.dev.yml found, trying docker-compose.ci.yml"
-            if [ ! -f docker-compose.ci.yml ]; then
-              echo "No docker-compose file found, skipping E2E services"
-              echo "e2e_ready=false" >> $GITHUB_OUTPUT
-              exit 0
-            fi
-            COMPOSE_FILE=docker-compose.ci.yml
-          else
-            COMPOSE_FILE=docker-compose.dev.yml
-          fi
-          echo "Starting E2E services with $COMPOSE_FILE (hot-reload)..."
-          docker compose -f "$COMPOSE_FILE" up -d 2>&1 || true
-          # Wait for backend health (first cargo build may take 10+ minutes)
-          for i in $(seq 1 180); do
-            if curl -sf http://localhost:8080/health 2>/dev/null; then
-              echo "Backend healthy (attempt $i)"
-              break
-            fi
-            sleep 5
-          done
-          # Wait for frontend health
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:80 2>/dev/null || curl -sf http://localhost:80/health 2>/dev/null; then
-              echo "Frontend healthy (attempt $i)"
-              break
-            fi
-            sleep 3
-          done
-          echo "e2e_ready=true" >> $GITHUB_OUTPUT
-          echo "E2E services ready: backend=http://localhost:8080 frontend=http://localhost:80"
-          echo "compose_file=$COMPOSE_FILE" >> $GITHUB_OUTPUT
-
-      - name: Install Playwright
-        if: |
-          (steps.context.outputs.mode != 'pr' || steps.iter-check.outputs.exceeded == 'false') &&
-          steps.quick-fix.outputs.pushed != 'true'
-        shell: bash
-        working-directory: target-repo/frontend
-        run: |
-          if [ ! -f package.json ]; then
-            echo "No frontend/package.json, skipping Playwright install"
-            exit 0
-          fi
-          echo "Installing frontend dependencies..."
-          npm install 2>&1 | tail -5
-          echo "Installing Playwright browsers..."
-          npx playwright install --with-deps 2>&1 | tail -5
-          echo "Playwright installed"
 
       - name: Run fix (PR mode)
         if: |
