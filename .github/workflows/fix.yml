@@ -502,6 +502,7 @@ jobs:
           echo "model=openai/${MUSE_MODEL}" >> $GITHUB_OUTPUT
           echo "base=${MUSE_BASE}" >> $GITHUB_OUTPUT
           echo "key=${MUSE_KEY}" >> $GITHUB_OUTPUT
+          echo "model_display=${MUSE_MODEL}" >> $GITHUB_OUTPUT
           echo "Direct muse-spark selected (model+base masked in logs by Actions)"
 
       - name: Start E2E services (hot-reload env for agent verification)
@@ -570,6 +571,7 @@ jobs:
           LLM_MODEL: ${{ steps.llm.outputs.model }}
           LLM_BASE_URL: ${{ steps.llm.outputs.base }}
           LLM_API_KEY: ${{ steps.llm.outputs.key }}
+          LLM_MODEL_DISPLAY: ${{ steps.llm.outputs.model_display }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_NUMBER: ${{ steps.context.outputs.target_number }}
           REPO_NAME: ${{ github.repository }}
@@ -675,6 +677,7 @@ jobs:
           LLM_MODEL: ${{ steps.llm.outputs.model }}
           LLM_BASE_URL: ${{ steps.llm.outputs.base }}
           LLM_API_KEY: ${{ steps.llm.outputs.key }}
+          LLM_MODEL_DISPLAY: ${{ steps.llm.outputs.model_display }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           REVIEW_CONTEXT_FILE: /tmp/fix_context.txt
           PR_NUMBER: ${{ steps.context.outputs.target_number }}

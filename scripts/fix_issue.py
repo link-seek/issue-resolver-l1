@@ -434,6 +434,9 @@ def main():
 
     api_key = get_env("LLM_API_KEY")
     model = get_env("LLM_MODEL", "openai/primary")
+    # Display name mirrors discuss.py: workflow passes the raw model id via
+    # LLM_MODEL_DISPLAY, falling back to the full LLM_MODEL when unset.
+    model_display = os.environ.get("LLM_MODEL_DISPLAY") or model
     base_url = get_env("LLM_BASE_URL", "")
     github_token = get_env("GITHUB_TOKEN")
     issue_number = int(get_env("ISSUE_NUMBER"))
@@ -461,7 +464,7 @@ def main():
 
     # Comment: started
     gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-           {"body": get_template("issue_started")})
+           {"body": get_template("issue_started", model_name=model_display)})
 
     # Record state before agent
     commit_before = subprocess.run(
@@ -767,7 +770,8 @@ def main():
     if status_after_guard:
         subprocess.run(["git", "add", "-A"], check=True)
         subprocess.run(["git", "commit", "-m",
-                       get_template("commit_msg", issue_number=issue_number, title=title)],
+                       get_template("commit_msg", issue_number=issue_number, title=title,
+                                    model_name=model_display)],
                        check=True)
 
     # If agent committed to main (shouldn't happen but just in case), the branch
@@ -811,7 +815,7 @@ def main():
     github_token = get_valid_token()
     pr = gh_api("POST", f"{repo_name}/pulls", github_token, {
         "title": f"Fix #{issue_number}: {title}",
-        "body": get_template("pr_body", issue_number=issue_number),
+        "body": get_template("pr_body", issue_number=issue_number, model_name=model_display),
         "head": branch,
         "base": "main",
     })
@@ -864,7 +868,7 @@ def main():
     # Comment on issue
     emoji = "✅" if tests_ok else "⚠️"
     gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
-           {"body": get_template("pr_created", emoji=emoji, pr_num=pr_num, pr_url=pr_url, test_status="通过" if tests_ok else "失败")})
+           {"body": get_template("pr_created", emoji=emoji, pr_num=pr_num, pr_url=pr_url, test_status="通过" if tests_ok else "失败", model_name=model_display)})
 
     print(f"\n✅ Done! PR: {pr_url}")
 
