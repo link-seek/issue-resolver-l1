@@ -309,6 +309,124 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
     })
 
 
+def run_e2e_verification() -> dict | None:
+    """Run E2E tests after agent finishes. Returns results dict or None if skipped.
+    Same pattern as fix_pr.py: hot-reload env means no rebuild needed for dev
+    compose; backend URL comes from E2E_BACKEND_URL (default localhost:8080)."""
+    e2e_ready = os.getenv("E2E_DOCKER_READY", "false")
+    if e2e_ready != "true":
+        print("E2E Docker services not ready, skipping verification")
+        return None
+
+    frontend_dir = os.path.join(os.getcwd(), "frontend")
+    if not os.path.exists(os.path.join(frontend_dir, "package.json")):
+        print("No frontend/package.json, skipping E2E verification")
+        return None
+
+    backend_url = os.getenv("E2E_BACKEND_URL", "http://localhost:8080").rstrip("/")
+    compose_file = os.getenv("E2E_COMPOSE_FILE", "docker-compose.ci.yml")
+    if "dev" not in compose_file:
+        print("Rebuilding Docker services with latest code...")
+        try:
+            subprocess.run(
+                ["docker", "compose", "-f", compose_file, "up", "-d", "--build"],
+                capture_output=True, text=True, timeout=600,
+            )
+            for i in range(60):
+                if subprocess.run(
+                    ["curl", "-sf", f"{backend_url}/health"],
+                    capture_output=True,
+                ).returncode == 0:
+                    print(f"Backend healthy after rebuild (attempt {i+1})")
+                    break
+                time.sleep(3)
+        except Exception as e:
+            print(f"Warning: rebuild failed ({e}), testing with existing containers")
+
+    print("=" * 60)
+    print("Running E2E verification tests...")
+    print("=" * 60)
+
+    try:
+        result = subprocess.run(
+            ["npx", "playwright", "test", "--grep", "@smoke|@regression", "--reporter=line"],
+            cwd=frontend_dir,
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+        output = result.stdout + result.stderr
+        print(f"E2E exit code: {result.returncode}")
+    except subprocess.TimeoutExpired as e:
+        print("E2E tests timed out after 1800s")
+        output = str(e.stdout or "") + str(e.stderr or "")
+        result = None
+    except Exception as e:
+        print(f"E2E verification failed with error: {e}")
+        return {"passed": 0, "failed": -1, "exit_code": -1, "output_tail": str(e)[:1500]}
+
+    print(output[-2000:] if len(output) > 2000 else output)
+
+    passed = 0
+    failed = 0
+    for line in output.splitlines():
+        m = re.search(r"(\d+)\s*passed", line)
+        if m:
+            passed = int(m.group(1))
+        m = re.search(r"(\d+)\s*failed", line)
+        if m:
+            failed = int(m.group(1))
+
+    exit_code = result.returncode if result else -1
+    if exit_code != 0 and failed == 0 and passed > 0:
+        failed = 1
+        print("Warning: exit code non-zero but no failures parsed, setting failed=1")
+
+    summary = {
+        "passed": passed,
+        "failed": failed,
+        "exit_code": exit_code,
+        "output_tail": output[-1500:] if len(output) > 1500 else output,
+    }
+    print(f"E2E results: {passed} passed, {failed} failed")
+    return summary
+
+
+def run_e2e_gate() -> dict | None:
+    """Run e2e-gate after agent finishes. Returns results dict or None if skipped."""
+    frontend_dir = os.path.join(os.getcwd(), "frontend")
+    if not os.path.exists(os.path.join(frontend_dir, "tests")):
+        print("No frontend/tests/ directory, skipping e2e-gate")
+        return None
+
+    gate_script = os.path.join(
+        os.path.dirname(__file__), "e2e_gate.sh"
+    )
+    if not os.path.exists(gate_script):
+        print(f"e2e_gate.sh not found at {gate_script}, skipping")
+        return None
+
+    print("=" * 60)
+    print("Running e2e-gate...")
+    print("=" * 60)
+
+    try:
+        result = subprocess.run(
+            ["bash", gate_script, os.getcwd()],
+            capture_output=True, text=True, timeout=60,
+        )
+        output = result.stdout + result.stderr
+        print(output)
+    except Exception as e:
+        print(f"e2e-gate failed with error: {e}")
+        return {"passed": False, "output": str(e)[:1500]}
+
+    return {
+        "passed": result.returncode == 0,
+        "output": output[-1500:] if len(output) > 1500 else output,
+    }
+
+
 def main():
     print("=" * 60)
     print("Issue Resolver (OpenHands SDK + LocalWorkspace)")
@@ -377,11 +495,50 @@ def main():
             repo_name=repo_name, title=title, body=body, comments_text=comments_text,
         )
 
+    # E2E hot-env (same pattern as fix_pr.py): verify locally before push.
+    # The workflow starts docker-compose services and passes E2E_* envs;
+    # without them the agent falls back to blind implement + PR CI verdict.
+    _e2e_ready = os.environ.get("E2E_DOCKER_READY", "false") == "true"
+    if _e2e_ready:
+        _e2e_backend = os.environ.get("E2E_BACKEND_URL", "http://localhost:8080").rstrip("/")
+        _e2e_frontend = os.environ.get("E2E_FRONTEND_URL", "http://localhost:80").rstrip("/")
+        task_prompt += f"""
+## E2E 开发环境（热部署，改代码自动生效）
+- Backend: {_e2e_backend}（GraphQL: {_e2e_backend}/graphql）
+- Frontend: {_e2e_frontend}（Vite HMR，改前端代码秒级生效）
+- 后端改代码后 cargo watch 自动重编译（3-5 分钟），无需手动重建
+
+### 开发流程（改 → 测 → 迭代）
+1. 诊断根因后修复
+2. 验证：`cd frontend && CI=true npx playwright test --grep "@smoke|@regression" --reporter=line 2>&1 | tail -50`（terminal timeout=600）
+3. 通过或失败减少 → 继续；失败不变或增加 → **不要提交**，重新诊断
+
+**禁止盲改** — 没有本地验证过的修改不要提交push。
+"""
+
     # Create agent
     from openhands.sdk import LLM, Agent, Conversation, get_logger
     from openhands.sdk.workspace import LocalWorkspace
     from openhands.tools.preset.default import get_default_tools
     from openhands.sdk.context.condenser.llm_summarizing_condenser import LLMSummarizingCondenser
+
+    # Monkey-patch: route muse-spark through native Responses API (same as discuss.py).
+    # Without this the Chat Completions bridge drops tool_calls (LiteLLM #17246).
+    from openhands.sdk.llm.utils.model_features import RESPONSES_API_MODELS
+    if "muse-spark" not in RESPONSES_API_MODELS:
+        RESPONSES_API_MODELS.append("muse-spark")
+
+    # Monkey-patch: merge duplicate function_call_output (same as discuss.py).
+    from openhands.sdk.llm.message import Message, TextContent
+    _orig_to_responses_dict = Message.to_responses_dict
+    def _patched_to_responses_dict(self, *, vision_enabled=False):
+        if self.role != "tool" or self.tool_call_id is None:
+            return _orig_to_responses_dict(self, vision_enabled=vision_enabled)
+        text_parts = [c.text for c in self.content if isinstance(c, TextContent) and c.text]
+        if text_parts:
+            return [{"type": "function_call_output", "call_id": self.tool_call_id, "output": "\n".join(text_parts)}]
+        return []
+    Message.to_responses_dict = _patched_to_responses_dict
 
     logger = get_logger(__name__)
     logger.info("Creating OpenHands agent with LocalWorkspace...")
@@ -400,6 +557,7 @@ def main():
         "extra_headers": {
             "X-Session-Id": _llm_session_id,
             "x-session-affinity": _llm_session_id,
+            "x-opencode-session": _llm_session_id,
             "User-Agent": "opencode/1.18.27",
         },
     }
@@ -505,6 +663,72 @@ def main():
         gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token,
                {"body": get_template("issue_no_changes")})
         sys.exit(0)
+
+    # L3 verification loop (same pattern as fix_pr.py, but fail-closed):
+    # e2e-gate → E2E → feed failures back to agent, max 10 attempts.
+    # Stall breaker: 3 consecutive rounds with unchanged failure count.
+    # On exhaustion: label needs-human + comment, exit WITHOUT push —
+    # unless the issue carries the no-gate label (explicit escape hatch).
+    issue_labels = {lb.get("name", "") for lb in (issue.get("labels") or [])}
+    skip_gate = "no-gate" in issue_labels
+    l3_max_attempts = 10
+    l3_ok = skip_gate
+    if skip_gate:
+        print("no-gate label present, skipping L3 verification loop")
+    else:
+        l3_stall = 0
+        l3_last_failed = -1
+        for l3_attempt in range(1, l3_max_attempts + 1):
+            print(f"L3 verification attempt {l3_attempt}/{l3_max_attempts}")
+            gate_results = run_e2e_gate()
+            if gate_results is not None and not gate_results["passed"]:
+                print("e2e-gate failed, counting as failed round")
+                e2e_results = {"passed": 0, "failed": 1, "exit_code": -1,
+                               "output_tail": "e2e-gate failed:\n" + gate_results["output"][-800:]}
+            else:
+                if gate_results is not None:
+                    print("e2e-gate passed ✓")
+                e2e_results = run_e2e_verification()
+            if e2e_results is None:
+                print("E2E verification skipped (no Docker services)")
+                l3_ok = True
+                break
+            if e2e_results["failed"] == 0 and e2e_results["passed"] > 0:
+                print(f"L3 passed: {e2e_results['passed']} passed")
+                l3_ok = True
+                break
+            if e2e_results["failed"] == l3_last_failed and e2e_results["failed"] > 0:
+                l3_stall += 1
+            else:
+                l3_stall = 0
+            l3_last_failed = e2e_results["failed"]
+            if l3_stall >= 3:
+                print(f"L3 stalled ({l3_stall} rounds without progress), breaking")
+                break
+            if l3_attempt >= l3_max_attempts:
+                break
+            failure_msg = (
+                f"E2E 验证结果：{e2e_results['passed']} passed, {e2e_results['failed']} failed\n\n"
+                f"失败详情（最后 1500 字符）：\n```\n{e2e_results['output_tail'][-1500:]}\n```\n\n"
+                f"你还有 {l3_max_attempts - l3_attempt} 次机会。请根据失败详情继续修复，然后我会再次验证。"
+            )
+            print(f"Sending E2E failures back to agent (L3 attempt {l3_attempt})...")
+            try:
+                conversation.send_message(failure_msg)
+                conversation.run()
+                logger.info("Agent re-run completed (L3 attempt %d, E2E fix)", l3_attempt)
+            except Exception as e:
+                print(f"Agent re-run failed: {type(e).__name__}: {e}")
+                break
+    if not l3_ok:
+        print("L3 verification failed: NOT pushing (fail-closed)")
+        fresh_token = get_valid_token()
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/labels", fresh_token,
+               {"labels": ["needs-human"]})
+        gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", fresh_token,
+               {"body": ("🧑 **需要人工介入**：本地 E2E 复检未通过，已停止推送（fail-closed）。\n"
+                         "如确认复检为环境问题，可打 `no-gate` label 后重跑。")})
+        sys.exit(1)
 
     # Create branch
     branch = f"agent/fix-{issue_type}-{issue_number}"

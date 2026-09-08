@@ -537,6 +537,24 @@ ocr review --audience agent 2>&1
     from openhands.tools.preset.default import get_default_tools
     from openhands.sdk.context.condenser.llm_summarizing_condenser import LLMSummarizingCondenser
 
+    # Monkey-patch: route muse-spark through native Responses API (same as discuss.py).
+    # Without this the Chat Completions bridge drops tool_calls (LiteLLM #17246).
+    from openhands.sdk.llm.utils.model_features import RESPONSES_API_MODELS
+    if "muse-spark" not in RESPONSES_API_MODELS:
+        RESPONSES_API_MODELS.append("muse-spark")
+
+    # Monkey-patch: merge duplicate function_call_output (same as discuss.py).
+    from openhands.sdk.llm.message import Message, TextContent
+    _orig_to_responses_dict = Message.to_responses_dict
+    def _patched_to_responses_dict(self, *, vision_enabled=False):
+        if self.role != "tool" or self.tool_call_id is None:
+            return _orig_to_responses_dict(self, vision_enabled=vision_enabled)
+        text_parts = [c.text for c in self.content if isinstance(c, TextContent) and c.text]
+        if text_parts:
+            return [{"type": "function_call_output", "call_id": self.tool_call_id, "output": "\n".join(text_parts)}]
+        return []
+    Message.to_responses_dict = _patched_to_responses_dict
+
     logger = get_logger(__name__)
     logger.info("Creating OpenHands agent for auto-fix...")
 
@@ -554,6 +572,7 @@ ocr review --audience agent 2>&1
         "extra_headers": {
             "X-Session-Id": _llm_session_id,
             "x-session-affinity": _llm_session_id,
+            "x-opencode-session": _llm_session_id,
             "User-Agent": "opencode/1.18.27",
         },
     }
