@@ -11,7 +11,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 
-from templates import get_template  # noqa: E402
+from templates import get_template
 
 REAL_MODEL = "muse-spark-1.2-contributor-free"
 
