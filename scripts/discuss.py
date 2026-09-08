@@ -175,8 +175,6 @@ captured = io.StringIO()
 old_stdout = sys.stdout
 sys.stdout = captured
 
-import litellm
-
 from openhands.sdk import LLM, Agent, AgentContext, Conversation
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
