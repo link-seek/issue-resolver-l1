@@ -133,6 +133,31 @@ def get_file_tree(max_depth: int = 3) -> str:
         return "(无法获取文件树)"
 
 
+def load_prod_section(admin_email: str, admin_password: str) -> str:
+    """消费仓生产环境说明：优先读消费仓自带文件，不在 L1 硬编码任何一家。
+
+    约定路径（相对目标仓库根）: .github/oh/discuss-prod.md
+    文件内可用 {admin_email} / {admin_password} 占位。
+    未声明时返回中性默认，仅基于代码分析作答。
+    """
+    default = "本仓库未配置生产环境验证，仅基于代码分析作答。"
+    try:
+        with open(".github/oh/discuss-prod.md", encoding="utf-8") as f:
+            content = f.read().strip()
+        if not content:
+            return default
+        return content.replace("{admin_email}", admin_email).replace("{admin_password}", admin_password)
+    except OSError:
+        return default
+
+
+def _is_bot_reply(login: str, bot_login: str) -> bool:
+    """Bot 身份判定：显式 BOT_LOGIN 优先，否则以后缀 [bot] 判定（GitHub 保留后缀）。"""
+    if bot_login and login == bot_login:
+        return True
+    return bool(login) and login.endswith("[bot]")
+
+
 def parse_issue_response(response: str) -> tuple:
     """Parse LLM response for to-issue mode.
 
@@ -444,12 +469,18 @@ def main():
             discussion_number=discussion_number,
         )
     else:
-        admin_email = os.environ.get("EAP_ADMIN_EMAIL", "")
-        admin_password = os.environ.get("EAP_ADMIN_PASSWORD", "")
-        # Python-side deterministic first-reply detection (bot has no replies yet)
-        bot_login = os.environ.get("BOT_LOGIN", "link-seek-bot")
+        # 通用命名优先，EAP_* 兼容老调用方；消费仓未配置时为空
+        admin_email = os.environ.get("ADMIN_EMAIL") or os.environ.get("EAP_ADMIN_EMAIL", "")
+        admin_password = os.environ.get("ADMIN_PASSWORD") or os.environ.get("EAP_ADMIN_PASSWORD", "")
+        # 消费仓可在 .github/oh/discuss-prod.md 声明自家生产环境（不在 L1 硬编码）；
+        # 未声明则用中性默认，仅基于代码分析作答。
+        prod_section = load_prod_section(admin_email, admin_password)
+        # Bot 身份以后缀判定（GitHub 保留 [bot] 后缀），不再默认某家 Bot 名；
+        # BOT_LOGIN 仍可显式覆盖。
+        bot_login = os.environ.get("BOT_LOGIN", "")
         is_first_reply = not any(
-            (c.get("author") or {}).get("login") == bot_login for c in comments
+            _is_bot_reply((c.get("author") or {}).get("login", ""), bot_login)
+            for c in comments
         )
         print(f"First reply: {is_first_reply}")
 
@@ -460,7 +491,7 @@ def main():
             "prompt_discuss",
             repo_name=repo_name, file_tree=file_tree, title=title,
             category=category, body=body, comment_history=comment_history,
-            admin_email=admin_email, admin_password=admin_password,
+            prod_section=prod_section,
             response_template=response_template,
         )
 
