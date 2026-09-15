@@ -44,10 +44,10 @@ jobs:
     if: |
       (github.event_name == 'discussion_comment' &&
         (contains(github.event.comment.body, inputs.mention) || contains(github.event.comment.body, inputs.issue-mention)) &&
-        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER')) ||
+        (github.event.comment.author_association == 'OWNER' || github.event.comment.author_association == 'COLLABORATOR' || github.event.comment.author_association == 'MEMBER' || github.event.comment.author_association == 'CONTRIBUTOR')) ||
       (github.event_name == 'discussion' &&
         (contains(github.event.discussion.body, inputs.mention) || contains(github.event.discussion.body, inputs.issue-mention)) &&
-        (github.event.discussion.author_association == 'OWNER' || github.event.discussion.author_association == 'COLLABORATOR' || github.event.discussion.author_association == 'MEMBER'))
+        (github.event.discussion.author_association == 'OWNER' || github.event.discussion.author_association == 'COLLABORATOR' || github.event.discussion.author_association == 'MEMBER' || github.event.discussion.author_association == 'CONTRIBUTOR'))
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
