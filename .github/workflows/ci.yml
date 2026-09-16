@@ -116,5 +116,6 @@ jobs:
       - name: Run discussion pipeline test
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          DISCUSS_USER_TOKEN: ${{ secrets.PAT_TOKEN }}
           CONSUMER_REPO: ${{ vars.CONSUMER_REPO || 'link-seek/enterprise-architecture-platform' }}
         run: python scripts/validate_pipeline.py discussion

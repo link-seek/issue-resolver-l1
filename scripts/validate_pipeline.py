@@ -21,6 +21,10 @@ import urllib.request
 
 
 TOKEN = os.environ.get("GITHUB_TOKEN", "")
+# Discussions created by the App token post as Bot and are blocked by the
+# deliberate sender.type==User guard in discuss.yml. When set, discussion
+# create/close use this User token (PAT) so the trigger fires.
+USER_TOKEN = os.environ.get("DISCUSS_USER_TOKEN", "") or TOKEN
 CONSUMER_REPO = os.environ.get("CONSUMER_REPO", "")
 
 if not TOKEN:
@@ -45,11 +49,11 @@ def gh_api(method, path, data=None):
         return json.load(resp)
 
 
-def gh_graphql(query, variables=None):
+def gh_graphql(query, variables=None, token=None):
     url = "https://api.github.com/graphql"
     body = json.dumps({"query": query, "variables": variables or {}})
     req = urllib.request.Request(url, data=body.encode(), headers={
-        "Authorization": f"token {TOKEN}",
+        "Authorization": f"token {token or TOKEN}",
         "Accept": "application/vnd.github+json",
     }, method="POST")
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -92,13 +96,15 @@ def close_issue(number):
 def create_discussion(title, body):
     print(f"Creating discussion: {title}")
     repo_id = gh_graphql(
-        '{ repository(owner:"%s", name:"%s") { id discussionCategories(first:5) { nodes { id name } } } }' % (CONSUMER_OWNER, CONSUMER_NAME)
+        '{ repository(owner:"%s", name:"%s") { id discussionCategories(first:5) { nodes { id name } } } }' % (CONSUMER_OWNER, CONSUMER_NAME),
+        token=USER_TOKEN,
     )["data"]["repository"]
     category = CONFIG.get("pipeline_test", {}).get("discussion", {}).get("category", "General")
     cat_id = next(c["id"] for c in repo_id["discussionCategories"]["nodes"] if c["name"] == category)
     result = gh_graphql(
         'mutation($input: CreateDiscussionInput!) { createDiscussion(input: $input) { discussion { number url id } } }',
-        {"input": {"repositoryId": repo_id["id"], "categoryId": cat_id, "title": title, "body": body}}
+        {"input": {"repositoryId": repo_id["id"], "categoryId": cat_id, "title": title, "body": body}},
+        token=USER_TOKEN,
     )
     disc = result["data"]["createDiscussion"]["discussion"]
     print(f"  Discussion #{disc['number']}: {disc['url']}")
@@ -109,7 +115,8 @@ def close_discussion(node_id):
     print(f"Closing discussion {node_id}")
     gh_graphql(
         'mutation($input: CloseDiscussionInput!) { closeDiscussion(input: $input) { discussion { closed } } }',
-        {"input": {"discussionId": node_id, "reason": "RESOLVED"}}
+        {"input": {"discussionId": node_id, "reason": "RESOLVED"}},
+        token=USER_TOKEN,
     )
     print("  Discussion closed")
 
