@@ -592,6 +592,9 @@ jobs:
         continue-on-error: true
         env:
           E2E_BASE_URL: ${{ inputs.frontend-url }}
+          # 消费仓前端（EAP #544 起）经 E2E_API_URL 直连后端 API；
+          # 不传则 E2E 把 frontend-url 当 API 用，撞上 OSS 静态站 XML 必挂。
+          E2E_API_URL: ${{ inputs.api-url }}
           E2E_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
           E2E_EDITOR_EMAIL: ${{ secrets.E2E_EDITOR_EMAIL }}
