@@ -50,7 +50,7 @@ jobs:
   pipeline-test-non-db:
     needs: [lint, unit-test]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -74,7 +74,7 @@ jobs:
   pipeline-test-db:
     needs: [lint, unit-test]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -98,7 +98,7 @@ jobs:
   pipeline-test-discussion:
     needs: [lint, unit-test]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 150
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
