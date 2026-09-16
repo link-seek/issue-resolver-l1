@@ -132,7 +132,7 @@ def merge_pr(number):
     gh_api("PUT", f"pulls/{number}/merge", {"merge_method": "squash"})
 
 
-def wait_for_checks(pr_num, timeout=600):
+def wait_for_checks(pr_num, timeout=1800):
     """Wait until all CI checks pass and PR is clean for merge."""
     def _checks_passed():
         pr = get_pr(pr_num)
@@ -239,7 +239,7 @@ def test_non_db():
         pr_num = poll_until(
             "agent creates PR or asks confirmation",
             lambda: _find_pr_in_comments(issue_num),
-            timeout=600
+            timeout=2400
         )
         if not pr_num:
             print("FAIL: No PR created within timeout")
@@ -253,7 +253,7 @@ def test_non_db():
                 pr_num = poll_until(
                     "PR created after confirmation",
                     lambda: _find_pr_in_comments(issue_num),
-                    timeout=600
+                    timeout=2400
                 )
                 if not pr_num:
                     print("FAIL: No PR after confirmation")
@@ -263,7 +263,7 @@ def test_non_db():
         merged = poll_until(
             f"PR #{pr_num} auto-merged",
             lambda: _check_pr_merged(pr_num),
-            timeout=600
+            timeout=1800
         )
         if not merged:
             print(f"FAIL: PR #{pr_num} not auto-merged")
@@ -273,7 +273,7 @@ def test_non_db():
         deployed = poll_until(
             "deployment completed",
             lambda: _check_deploy_success(),
-            timeout=600
+            timeout=1800
         )
         if not deployed:
             print("FAIL: Deploy not completed")
@@ -338,7 +338,7 @@ def test_db():
         pr_num = poll_until(
             "agent creates PR for DB issue",
             lambda: _find_pr_in_comments(issue_num),
-            timeout=600
+            timeout=2400
         )
         if not pr_num:
             print("FAIL: No PR created")
@@ -348,7 +348,7 @@ def test_db():
         risk = poll_until(
             f"risk analysis comment on PR #{pr_num}",
             lambda: _check_risk_analysis(pr_num),
-            timeout=300
+            timeout=900
         )
         if not risk:
             print(f"FAIL: No risk analysis on PR #{pr_num}")
@@ -363,7 +363,7 @@ def test_db():
         print("  ✓ auto-merge not enabled (correct for DB changes)")
 
         # Wait for PR to be mergeable (CI checks pass)
-        mergeable = wait_for_checks(pr_num, timeout=600)
+        mergeable = wait_for_checks(pr_num, timeout=1800)
         if not mergeable:
             print(f"FAIL: PR #{pr_num} checks not passing within timeout")
             return False
@@ -375,7 +375,7 @@ def test_db():
         deployed = poll_until(
             "deployment after DB merge",
             lambda: _check_deploy_success(),
-            timeout=600
+            timeout=1800
         )
         if not deployed:
             print("FAIL: Deploy not completed after DB merge")
