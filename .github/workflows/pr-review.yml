@@ -142,11 +142,14 @@ jobs:
         run: |
           # Direct OpenCode Zen calls, same pattern as discuss.yml / fix.yml:
           # no local proxy in between, no day/night split.
-          # Single model 24h (shared quota with discuss).
+          # OCR 只会 OpenAI chat/completions，而 muse-spark 在 Zen Go 上要求
+          # /responses（chat 直接 500，上游已知问题）。review-ai 默认改走
+          # chat 兼容模型；显式传 llm-model 仍可覆盖。discuss/fix 走 opencode
+          # SDK（/responses）不受影响，继续用 DISCUSS_MODEL。
           MODEL="${INPUT_MODEL#openai/}"
           MODEL="${MODEL#anthropic/}"
           if [ -z "$MODEL" ]; then
-            MODEL="$MUSE_MODEL"
+            MODEL="mimo-v2.5"
           fi
           # Normalize base to the /v1 endpoint (accept with or without suffix).
           BASE="${MUSE_BASE%/}"
