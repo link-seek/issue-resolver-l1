@@ -527,7 +527,14 @@ jobs:
           steps.quick-fix.outputs.pushed != 'true'
         shell: bash
         working-directory: target-repo
+        env:
+          GHCR_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
+          # GHCR holds the private eap-dev-backend image; anonymous pull gets
+          # "unauthorized" -> services never come up -> E2E 104 failed -> fail-closed.
+          if [ -n "$GHCR_TOKEN" ]; then
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u x-access-token --password-stdin 2>&1 | tail -1 || true
+          fi
           if [ ! -f docker-compose.dev.yml ]; then
             echo "No docker-compose.dev.yml found, trying docker-compose.ci.yml"
             if [ ! -f docker-compose.ci.yml ]; then
