@@ -168,8 +168,7 @@ jobs:
           llm_auth_token: ${{ secrets.DISCUSS_API_KEY_1 }}
           llm_model: ${{ steps.llm.outputs.model }}
           llm_extra_headers: "x-opencode-session=${{ steps.llm.outputs.session_id }},X-Session-Id=${{ steps.llm.outputs.session_id }}"
-          # 覆盖 action 默认的 {"thinking":{"type":"disabled"}}（Anthropic 形状，
-          # 直连 Zen Go 的 OpenAI 兼容端点会 400 → 全部文件评审失败；LiteLLM 时代被代理吞掉故无事）
+          # 覆盖 action 默认的 {"thinking":{"type":"disabled"}}（Anthropic 形状防严格网关）
           llm_extra_body: '{}'
           llm_use_anthropic: 'false'
           language: '中文'
@@ -177,6 +176,28 @@ jobs:
           sticky_summary: 'true'
           github_token: ${{ steps.app-token.outputs.token }}
           ocr_version: '1.8.0'
+
+      # OCR 失败时导出 session 明细（含每个文件的真实 LLM 错误），随 artifact 上传
+      - name: Dump OCR session on failure
+        if: failure()
+        run: |
+          SID=$(grep -oE "Session: [0-9a-f-]{36}" /tmp/ocr-stderr.log | head -1 | awk '{print $2}' || true)
+          echo "OCR session id: $SID"
+          mkdir -p /tmp/ocr-debug
+          if [ -n "$SID" ]; then
+            ocr session show "$SID" > /tmp/ocr-debug/session-show.txt 2>&1 || true
+          fi
+          cp /tmp/ocr-stderr.log /tmp/ocr-debug/ 2>/dev/null || true
+          echo "--- session-show head ---"
+          head -c 3000 /tmp/ocr-debug/session-show.txt 2>/dev/null || echo "(no session dump)"
+
+      - name: Upload OCR debug bundle
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocr-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/ocr-debug/
+          if-no-files-found: warn
 
       - name: Wait for all gates and trigger auto-fix if needed
         id: verdict
