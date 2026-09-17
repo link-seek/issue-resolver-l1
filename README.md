@@ -28,9 +28,9 @@ jobs:
     steps:
       - uses: link-seek/issue-resolver@main
         with:
-          llm-model: openai/deepseek-v4-flash
-          llm-base-url: https://api.deepseek.com
-          llm-api-key: ${{ secrets.LLM_API_KEY }}
+          llm-model: openai/muse-spark-1.3-contributor
+          llm-base-url: https://opencode.ai/zen/go/v1
+          llm-api-key: ${{ secrets.DISCUSS_API_KEY_1 }}
           github-token: ${{ secrets.PAT_TOKEN }}
           issue-number: ${{ github.event.issue.number }}
           issue-type: issue
