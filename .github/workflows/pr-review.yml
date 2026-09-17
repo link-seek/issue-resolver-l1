@@ -199,9 +199,9 @@ jobs:
           ocr config set custom_providers.zen-go.url "$OCR_BASE"
           ocr config set custom_providers.zen-go.protocol openai-responses
           ocr config set custom_providers.zen-go.api_key "$OCR_TOKEN"
-          # 注意：provider 激活时 llm.* 全被忽略，model 必须挂在 provider 下
+          # 注意：provider 激活时 llm.* 全被忽略，model/headers 必须挂在 provider 下
           ocr config set custom_providers.zen-go.model "$OCR_MODEL"
-          ocr config set llm.extra_headers "x-opencode-session=$OCR_SESSION,X-Session-Id=$OCR_SESSION"
+          ocr config set custom_providers.zen-go.extra_headers "x-opencode-session=$OCR_SESSION,X-Session-Id=$OCR_SESSION"
           ocr config set language "中文"
           ARGS=(review --from "$MERGE_BASE" --to "$HEAD_SHA" --format json)
           ocr "${ARGS[@]}" > /tmp/ocr-result.json 2>/tmp/ocr-stderr.log
