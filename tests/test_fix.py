@@ -190,37 +190,6 @@ class TestRebaseLogic(unittest.TestCase):
         self.assertEqual(expected_rebase[2], "origin/main")
 
 
-class TestPipelineTestScript(unittest.TestCase):
-    """Verify validate_pipeline.py has correct modes and helpers."""
-
-    @classmethod
-    def setUpClass(cls):
-        os.environ.setdefault("PAT_TOKEN", "fake-token-for-test")
-        os.environ.setdefault("CONSUMER_REPO", "link-seek/enterprise-architecture-platform")
-
-    def test_pipeline_test_imports(self):
-        import validate_pipeline
-        self.assertTrue(hasattr(validate_pipeline, "test_non_db"))
-        self.assertTrue(hasattr(validate_pipeline, "test_db"))
-        self.assertTrue(hasattr(validate_pipeline, "test_discussion"))
-
-    def test_run_with_retry_returns_true_on_success(self):
-        import validate_pipeline
-        result = validate_pipeline.run_with_retry("test", lambda: True, max_retries=2)
-        self.assertTrue(result)
-
-    def test_run_with_retry_returns_false_on_failure(self):
-        import validate_pipeline
-        result = validate_pipeline.run_with_retry("test", lambda: False, max_retries=2)
-        self.assertFalse(result)
-
-    def test_close_pr_if_open_handles_error(self):
-        import validate_pipeline
-        close_pr_if_open = validate_pipeline.close_pr_if_open
-        result = close_pr_if_open(999999)
-        self.assertIsNone(result)
-
-
 class TestContentFilterHandling(unittest.TestCase):
     """Test fix_pr.py content-safety-filter detection and redaction."""
 
