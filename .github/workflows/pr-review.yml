@@ -51,7 +51,7 @@ on:
       DISCUSS_API_KEY_1:
         required: true
 
-    permissions:
+permissions:
   contents: read
   pull-requests: write
   issues: write
