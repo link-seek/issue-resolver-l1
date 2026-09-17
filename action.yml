@@ -1,6 +1,6 @@
 ---
 name: AI Issue Resolver
-description: Automatically resolve GitHub issues by creating PRs with fixes using DeepSeek-V4-Flash
+description: Automatically resolve GitHub issues by creating PRs with fixes (OpenCode Zen; DeepSeek/MaaS removed)
 author: link-seek
 
 branding:
@@ -9,13 +9,13 @@ branding:
 
 inputs:
     llm-model:
-        description: LLM model to use
+        description: LLM model to use (e.g. openai/<zen-model>; no default — pass your OpenCode Zen model)
         required: false
-        default: openai/deepseek-v4-flash
+        default: ''
     llm-base-url:
-        description: LLM base URL
+        description: LLM base URL (your OpenCode Zen endpoint; no default)
         required: false
-        default: 'https://api.deepseek.com'
+        default: ''
     llm-api-key:
         description: LLM API key
         required: true

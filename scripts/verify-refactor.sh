@@ -50,7 +50,11 @@ check "fix.yml 有 opencode quick-fix" "$(ge $CNT 1)" "1"
 CNT=$(fetch "$L1" ".github/workflows/fix.yml" | grep -c "quick-fix-fail" || true)
 check "fix.yml 有失败计数" "$(ge $CNT 1)" "1"
 CNT=$(fetch "$L1" ".github/workflows/fix.yml" | grep -c "deepseek" || true)
-check "fix.yml 用 deepseek 模型" "$(ge $CNT 1)" "1"
+check "fix.yml 无 deepseek 引用" "$CNT" "0"
+CNT=$(fetch "$L1" ".github/workflows/fix.yml" | grep -c "OPENCODE_API_KEY" || true)
+check "fix.yml quick-fix 用 Zen 鉴权" "$(ge $CNT 1)" "1"
+CNT=$(fetch "$L1" ".github/workflows/pr-review.yml" | grep -ci "litellm" || true)
+check "pr-review.yml 无 LiteLLM 代理" "$CNT" "0"
 
 echo ""
 echo "=== Phase 3: 月度清理解耦 ==="
