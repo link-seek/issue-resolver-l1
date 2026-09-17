@@ -53,6 +53,19 @@
 - 写约定（本文件）
 - 监控全过程，记录问题
 
+## 流程定义权与验证解耦（2026-09-17 补充）
+
+- **所有流程只能由 L1 定义**：包括业务流程（fix/pr-review/discuss）和验证流程
+  （pipeline-test）。消费仓（EAP）没有任何流程定义权，只有调用权。
+- **消费侧验证也是 L1 定义的 reusable workflow**：pipeline-test 以
+  `on: workflow_call` 形式存在于流程仓，EAP 侧只保留薄触发器
+  （cron/手动 + `uses: ...@main`），与 on-fix 调 fix.yml 同模式。
+- **L1 自身 PR 门禁只管 L1 代码**（lint + unit + workflow 语法校验），
+  不得把消费侧 E2E（pipeline-test 的建 issue→等 PR→等 CI→验镜像）塞进 L1 的
+  合入门禁 —— 两者触发源不同（代码变更 vs 链路巡检），耦合会导致一方抽风另一方全红。
+- 反例归档：2026-09 前 pipeline-test 三 job 常驻 `ci.yml`，600 秒轮询等 30–60 分钟的
+  agent 全链，L1 PR 常年被跨仓超时染红，已摘除（见 L1#31）。
+
 ## 禁止事项
 
 - L1 不能改 L1 自己的流程代码（那是 L2 的职责）
