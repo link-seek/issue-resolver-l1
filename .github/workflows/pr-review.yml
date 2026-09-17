@@ -28,8 +28,13 @@ on:
         required: false
         default: '🔴,🟠'
         type: string
+      accepted-risk-hints:
+        description: 'JSON array of substrings; findings whose content contains any hint are accepted (logged, not blocking). Default accepts tag-vs-SHA pinning: L1 mandates tag pins.'
+        required: false
+        default: '["pin to the exact commit SHA"]'
+        type: string
       llm-model:
-        description: 'LLM model for review (empty = use DISCUSS_MODEL secret, OpenCode Zen direct)'
+        description: 'LLM model for review (empty = chat-compatible default mimo-v2.5; muse-spark needs /responses which OCR cannot speak)'
         required: false
         default: ''
         type: string
@@ -209,6 +214,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ACCEPTED_HINTS: ${{ inputs.accepted-risk-hints }}
         run: |
           if [ ! -f /tmp/ocr-result.json ]; then
             echo "::error::OCR result file not found"
@@ -217,14 +223,19 @@ jobs:
 
           # --- 1. Parse OCR verdict ---
           VERDICT=$(python3 -c "
-          import json
+          import json, os
           with open('/tmp/ocr-result.json') as f:
               data = json.load(f)
           comments = data.get('comments', [])
-          blocking = [c for c in comments if c.get('severity') in ('critical', 'high')]
-          medium = [c for c in comments if c.get('severity') == 'medium']
+          hints = json.loads(os.environ.get('ACCEPTED_HINTS', '[]'))
+          accepted = [c for c in comments
+                      if any(h.lower() in (c.get('content') or '').lower() for h in hints)]
+          fresh = [c for c in comments if c not in accepted]
+          blocking = [c for c in fresh if c.get('severity') in ('critical', 'high')]
+          medium = [c for c in fresh if c.get('severity') == 'medium']
           total = len(comments)
           print(f'Total findings: {total}')
+          print(f'Accepted risks (policy, not blocking): {len(accepted)}')
           print(f'Blocking (critical/high): {len(blocking)}')
           print(f'Medium: {len(medium)}')
           if blocking:
@@ -264,19 +275,21 @@ jobs:
           if [ "$IS_BOT_PR" = "true" ] && [ "$OCR_BLOCKING" -gt 0 ]; then
             gh api repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/comments --paginate 2>/dev/null > /tmp/pr_review_comments.json || echo "[]" > /tmp/pr_review_comments.json
             cat > /tmp/classify_findings.py << 'PYEOF'
-          import json
+          import json, os
           from collections import defaultdict
           with open('/tmp/ocr-result.json') as f:
               ocr = json.load(f)
           with open('/tmp/pr_review_comments.json') as f:
               comments = json.load(f)
+          hints = json.loads(os.environ.get('ACCEPTED_HINTS', '[]'))
+          findings = [c for c in ocr.get('comments', [])
+                      if not any(h.lower() in (c.get('content') or '').lower() for h in hints)]
           loc_count = defaultdict(int)
           for c in comments:
               p = c.get('path', '')
               l = c.get('line') or c.get('original_line') or '?'
               loc_count[f"{p}:{l}"] += 1
           carry_over_locs = {k for k, v in loc_count.items() if v >= 2}
-          findings = ocr.get('comments', [])
           blocking = [c for c in findings if c.get('severity') in ('critical', 'high')]
           carry_over_high = 0
           new_critical = 0
