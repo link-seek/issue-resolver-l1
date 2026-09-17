@@ -234,9 +234,38 @@ jobs:
           except Exception as e:
               print(f'AI 评审未能产出结果：{e}')
           ")
+          # 全量 findings 落评论（可折叠）：结论永久可查，不依赖 artifact 留存
+          python3 -c "
+          import json
+          err = ''
+          try:
+              d = json.load(open('/tmp/ocr-result.json'))
+              cs = d.get('comments', [])
+          except Exception as e:
+              cs = []
+              err = str(e)
+          lines = ['<details><summary>全部 findings（点击展开）</summary>', '']
+          if not cs:
+              lines.append('无结论：' + err if err else '无 findings')
+          for c in cs[:30]:
+              sev = c.get('severity', '?')
+              path = c.get('path', '?')
+              line = c.get('start_line', '?')
+              cat = c.get('category', '?')
+              content = (c.get('content') or '').strip().replace(chr(10), ' ')[:500]
+              lines.append(f'- [{sev}] \`{path}:{line}\` ({cat}) — {content}')
+          if len(cs) > 30:
+              lines.append(f'')
+              lines.append(f'…还有 {len(cs) - 30} 条，见 Artifacts（ocr-debug）。')
+          lines += ['', '</details>']
+          open('/tmp/ocr-findings.md', 'w').write(chr(10).join(lines))
+          "
+          FINDINGS=$(cat /tmp/ocr-findings.md)
           gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
             -f body="🤖 **review-ai（muse-spark / responses）**: $SUMMARY
-          详情见本次运行 Artifacts（ocr-review-result）。" 2>/dev/null || true
+          详情见本次运行 Artifacts（ocr-debug，含 ocr-result.json，保留 90 天）。
+
+          $FINDINGS" 2>/dev/null || true
 
       # OCR 失败时导出 session 明细（含每个文件的真实 LLM 错误），随 artifact 上传
       - name: Dump OCR session on failure
@@ -250,15 +279,18 @@ jobs:
             ocr session show "$SID" --json > /tmp/ocr-debug/session-show.json 2>&1 || true
           fi
           cp /tmp/ocr-stderr.log /tmp/ocr-debug/ 2>/dev/null || true
+          # 结论 JSON 每次都留档：OCR 成功但有 blocking 时，事后定位全靠它
+          cp /tmp/ocr-result.json /tmp/ocr-debug/ 2>/dev/null || true
           echo "--- session-show head ---"
           head -c 3000 /tmp/ocr-debug/session-show.txt 2>/dev/null || echo "(no session dump)"
 
       - name: Upload OCR debug bundle
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ocr-debug-${{ github.run_id }}-${{ github.run_attempt }}
           path: /tmp/ocr-debug/
+          retention-days: 90
           if-no-files-found: warn
 
       - name: Wait for all gates and trigger auto-fix if needed
