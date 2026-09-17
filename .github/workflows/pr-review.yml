@@ -168,6 +168,9 @@ jobs:
           llm_auth_token: ${{ secrets.DISCUSS_API_KEY_1 }}
           llm_model: ${{ steps.llm.outputs.model }}
           llm_extra_headers: "x-opencode-session=${{ steps.llm.outputs.session_id }},X-Session-Id=${{ steps.llm.outputs.session_id }}"
+          # 覆盖 action 默认的 {"thinking":{"type":"disabled"}}（Anthropic 形状，
+          # 直连 Zen Go 的 OpenAI 兼容端点会 400 → 全部文件评审失败；LiteLLM 时代被代理吞掉故无事）
+          llm_extra_body: '{}'
           llm_use_anthropic: 'false'
           language: '中文'
           incremental: 'true'
