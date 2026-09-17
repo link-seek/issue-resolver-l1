@@ -512,7 +512,7 @@ jobs:
         run: |
           # Direct gateway calls, same pattern as discuss.yml: the SDK talks to
           # the provider endpoint itself — no local proxy in between.
-          # Single free-tier model (muse-spark), shared quota with discuss;
+          # Single OpenCode Go model (muse-spark 1.3 paid), shared quota with discuss;
           # no day/night split, no fallback (retry via SDK tenacity instead).
           echo "model=openai/${MUSE_MODEL}" >> $GITHUB_OUTPUT
           echo "base=${MUSE_BASE}" >> $GITHUB_OUTPUT

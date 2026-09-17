@@ -5,7 +5,7 @@ on:
       model_to_test:
         description: 'Specific model to test (leave empty for all)'
         required: false
-        default: 'muse-spark-1.2-contributor-free'
+        default: 'muse-spark-1.3-contributor'
 
 jobs:
   discover:
@@ -50,7 +50,7 @@ jobs:
               'nemotron-3.5-lightning-free',
               'ling-3.0-flash-fin-free',
               'big-pickle',
-              'muse-spark-1.2-contributor-free',
+              'muse-spark-1.3-contributor',
               'nemotron-3-ultra-free',
               'laguna-s-2.1-free',
           ]
