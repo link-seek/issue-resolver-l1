@@ -34,9 +34,9 @@ on:
         default: '[]'
         type: string
       llm-model:
-        description: 'LLM model'
+        description: 'LLM model (unused, kept for compatibility; Zen model comes from DISCUSS_MODEL secret)'
         required: false
-        default: 'openai/primary'
+        default: ''
         type: string
       timeout-minutes:
         description: 'Timeout in minutes (unused, kept for compatibility)'
@@ -50,6 +50,12 @@ on:
       LLM_API_KEY_2:
         required: true
       LLM_API_KEY_3:
+        required: true
+      DISCUSS_MODEL:
+        required: true
+      DISCUSS_API_BASE:
+        required: true
+      DISCUSS_API_KEY_1:
         required: true
       APP_ID:
         required: true
@@ -415,7 +421,7 @@ jobs:
           # anysearch (web search for L1 agent)
           pip install requests -q
 
-      - name: Quick-fix attempt (opencode + deepseek)
+      - name: Quick-fix attempt (opencode Zen)
         id: quick-fix
         if: |
           steps.context.outputs.mode == 'pr' &&
@@ -426,6 +432,8 @@ jobs:
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
+          MUSE_MODEL: ${{ secrets.DISCUSS_MODEL }}
+          OPENCODE_API_KEY: ${{ secrets.DISCUSS_API_KEY_1 }}
         run: |
           echo "pushed=false" >> $GITHUB_OUTPUT
           # Check quick-fix failure count
@@ -456,8 +464,15 @@ jobs:
           echo "opencode.json" >> .gitignore
 
           echo "Running opencode quick-fix for PR #$PR_NUMBER..."
+          # Zen-hosted model (same muse-spark as discuss/full-fix).
+          # OPENCODE_API_KEY comes from env above.
+          QF_MODEL="$MUSE_MODEL"
+          case "$QF_MODEL" in
+            opencode/*) ;;
+            *) QF_MODEL="opencode/$QF_MODEL" ;;
+          esac
           opencode run \
-            --model opencode/deepseek-v4-flash-free \
+            --model "$QF_MODEL" \
             --auto \
             "Fix the CI test failures for PR #$PR_NUMBER in this repository.
 
@@ -476,11 +491,11 @@ jobs:
             echo "pushed=true" >> $GITHUB_OUTPUT
             echo "Quick-fix pushed changes: $HEAD_SHA -> $REMOTE_SHA"
             gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
-              -f body="✅ Quick-fix (opencode+deepseek) pushed changes. Waiting for CI..."
+              -f body="✅ Quick-fix (opencode Zen) pushed changes. Waiting for CI..."
           else
             NEW_COUNT=$((FAIL_COUNT + 1))
             gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
-              -f body="🤖 [quick-fix-fail #$NEW_COUNT] opencode+deepseek quick-fix did not succeed ($NEW_COUNT/5). Will retry or fall back to full fix."
+              -f body="🤖 [quick-fix-fail #$NEW_COUNT] opencode Zen quick-fix did not succeed ($NEW_COUNT/5). Will retry or fall back to full fix."
             echo "Quick-fix did not push changes (attempt $NEW_COUNT/5)"
           fi
 
@@ -496,7 +511,7 @@ jobs:
           MUSE_KEY: ${{ secrets.DISCUSS_API_KEY_1 }}
         run: |
           # Direct gateway calls, same pattern as discuss.yml: the SDK talks to
-          # the provider endpoint itself — no local LiteLLM proxy in between.
+          # the provider endpoint itself — no local proxy in between.
           # Single free-tier model (muse-spark), shared quota with discuss;
           # no day/night split, no fallback (retry via SDK tenacity instead).
           echo "model=openai/${MUSE_MODEL}" >> $GITHUB_OUTPUT

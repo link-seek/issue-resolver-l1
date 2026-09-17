@@ -29,9 +29,9 @@ on:
         default: '🔴,🟠'
         type: string
       llm-model:
-        description: 'LLM model for review'
+        description: 'LLM model for review (empty = use DISCUSS_MODEL secret, OpenCode Zen direct)'
         required: false
-        default: 'openai/primary'
+        default: ''
         type: string
       review-timeout-minutes:
         description: 'Review timeout in minutes'
@@ -43,6 +43,12 @@ on:
       APP_ID:
         required: true
       APP_PRIVATE_KEY:
+        required: true
+      DISCUSS_MODEL:
+        required: true
+      DISCUSS_API_BASE:
+        required: true
+      DISCUSS_API_KEY_1:
         required: true
       LLM_API_KEY_1:
         required: true
@@ -132,101 +138,42 @@ jobs:
           permission-actions: write
           permission-checks: read
 
-      - name: Resolve LLM config
+      - name: Select LLM endpoint (direct, no proxy)
         id: llm
-        env:
-          RAW_MODEL: ${{ inputs.llm-model }}
-        run: |
-          MODEL="${RAW_MODEL#openai/}"
-          MODEL="${MODEL#anthropic/}"
-          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
-          echo "Resolved model: $MODEL"
-
-      - name: Setup LiteLLM proxy
-        id: litellm-setup
         shell: bash
         env:
-          PRIMARY_KEY_1: ${{ secrets.PRIMARY_API_KEY_1 }}
-          PRIMARY_KEY_2: ${{ secrets.PRIMARY_API_KEY_2 }}
-          PRIMARY_KEY_3: ${{ secrets.PRIMARY_API_KEY_3 }}
-          PRIMARY_BASE: ${{ secrets.PRIMARY_API_BASE }}
-          PRIMARY_MODEL: ${{ secrets.PRIMARY_MODEL }}
-          SECONDARY_KEY: ${{ secrets.SECONDARY_API_KEY }}
-          SECONDARY_BASE: ${{ secrets.SECONDARY_API_BASE }}
-          SECONDARY_MODEL: ${{ secrets.SECONDARY_MODEL }}
+          INPUT_MODEL: ${{ inputs.llm-model }}
+          MUSE_MODEL: ${{ secrets.DISCUSS_MODEL }}
+          MUSE_BASE: ${{ secrets.DISCUSS_API_BASE }}
         run: |
-          HOUR_BEIJING=$(( (10#$(date -u +%H) + 8) % 24 ))
-          if [ "$HOUR_BEIJING" -ge 9 ] && [ "$HOUR_BEIJING" -lt 18 ]; then
-            echo "Beijing $HOUR_BEIJING:00 — working hours, using primary model"
-            echo "active_model=primary" >> $GITHUB_OUTPUT
-          else
-            echo "Beijing $HOUR_BEIJING:00 — off hours, using secondary model"
-            echo "active_model=secondary" >> $GITHUB_OUTPUT
+          # Direct OpenCode Zen calls, same pattern as discuss.yml / fix.yml:
+          # no local proxy in between, no day/night split.
+          # Single model 24h (shared quota with discuss).
+          MODEL="${INPUT_MODEL#openai/}"
+          MODEL="${MODEL#anthropic/}"
+          if [ -z "$MODEL" ]; then
+            MODEL="$MUSE_MODEL"
           fi
-          cat > /tmp/litellm_config.yaml << EOF
-          model_list:
-            - model_name: primary
-              litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_1}
-                api_base: ${PRIMARY_BASE}
-            - model_name: primary
-              litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_2}
-                api_base: ${PRIMARY_BASE}
-            - model_name: primary
-              litellm_params:
-                model: openai/${PRIMARY_MODEL}
-                api_key: ${PRIMARY_KEY_3}
-                api_base: ${PRIMARY_BASE}
-            - model_name: secondary
-              litellm_params:
-                model: openai/${SECONDARY_MODEL}
-                api_key: ${SECONDARY_KEY}
-                api_base: ${SECONDARY_BASE}
-          EOF
-          cat >> /tmp/litellm_config.yaml << 'EOF'
-          litellm_settings:
-            cache: true
-            cache_params:
-              type: local
-          router_settings:
-            routing_strategy: least-busy
-            num_retries: 3
-            allowed_fails: 3
-            request_timeout: 120
-          general_settings:
-            master_key: sk-litellm-proxy
-            drop_params: false
-          EOF
-
-          docker run -d --name litellm \
-            -p 4000:4000 \
-            -v /tmp/litellm_config.yaml:/app/config.yaml \
-            ghcr.io/berriai/litellm:main-latest \
-            --config /app/config.yaml --port 4000 --host 0.0.0.0
-
-          echo "Waiting for LiteLLM proxy to be ready..."
-          for i in $(seq 1 60); do
-            if curl -sf -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health > /dev/null 2>&1; then
-              echo "LiteLLM proxy ready (attempt $i)"
-              curl -s -H "Authorization: Bearer sk-litellm-proxy" http://localhost:4000/health
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "::error::LiteLLM proxy failed to start"
-          docker logs litellm 2>&1 | tail -50
-          exit 1
+          # Normalize base to the /v1 endpoint (accept with or without suffix).
+          BASE="${MUSE_BASE%/}"
+          if [ "${BASE%/v1}" = "$BASE" ]; then
+            BASE="$BASE/v1"
+          fi
+          echo "model=$MODEL" >> "$GITHUB_OUTPUT"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          # Per-run session id so Console Go can route efficiently.
+          # (Missing x-opencode-session caused the old secondary 400s.)
+          echo "session_id=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "Direct Zen selected (model+base masked in logs by Actions)"
 
       - name: Run Open Code Review
         id: ocr
         uses: alibaba/open-code-review@v1.8.0
         with:
-          llm_url: http://localhost:4000/v1
-          llm_auth_token: sk-litellm-proxy
-          llm_model: ${{ steps.litellm-setup.outputs.active_model }}
+          llm_url: ${{ steps.llm.outputs.base }}
+          llm_auth_token: ${{ secrets.DISCUSS_API_KEY_1 }}
+          llm_model: ${{ steps.llm.outputs.model }}
+          llm_extra_headers: "x-opencode-session=${{ steps.llm.outputs.session_id }},X-Session-Id=${{ steps.llm.outputs.session_id }}"
           llm_use_anthropic: 'false'
           language: '中文'
           incremental: 'true'
