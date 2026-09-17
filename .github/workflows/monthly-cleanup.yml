@@ -7,12 +7,6 @@ on:
         required: true
       APP_PRIVATE_KEY:
         required: true
-      LLM_API_KEY_1:
-        required: true
-      LLM_API_KEY_2:
-        required: true
-      LLM_API_KEY_3:
-        required: true
       PAT_TOKEN:
         required: false
       TAVILY_API_KEY:

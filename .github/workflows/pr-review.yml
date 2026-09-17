@@ -50,14 +50,8 @@ on:
         required: true
       DISCUSS_API_KEY_1:
         required: true
-      LLM_API_KEY_1:
-        required: true
-      LLM_API_KEY_2:
-        required: true
-      LLM_API_KEY_3:
-        required: true
 
-permissions:
+    permissions:
   contents: read
   pull-requests: write
   issues: write

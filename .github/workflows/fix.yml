@@ -45,12 +45,6 @@ on:
         type: string
 
     secrets:
-      LLM_API_KEY_1:
-        required: true
-      LLM_API_KEY_2:
-        required: true
-      LLM_API_KEY_3:
-        required: true
       DISCUSS_MODEL:
         required: true
       DISCUSS_API_BASE:
