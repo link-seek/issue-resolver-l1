@@ -186,6 +186,7 @@ jobs:
           mkdir -p /tmp/ocr-debug
           if [ -n "$SID" ]; then
             ocr session show "$SID" > /tmp/ocr-debug/session-show.txt 2>&1 || true
+            ocr session show "$SID" --json > /tmp/ocr-debug/session-show.json 2>&1 || true
           fi
           cp /tmp/ocr-stderr.log /tmp/ocr-debug/ 2>/dev/null || true
           echo "--- session-show head ---"
