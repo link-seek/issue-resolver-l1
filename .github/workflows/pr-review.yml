@@ -34,7 +34,7 @@ on:
         default: '["pin to the exact commit SHA"]'
         type: string
       llm-model:
-        description: 'LLM model for review (empty = chat-compatible default mimo-v2.5; muse-spark needs /responses which OCR cannot speak)'
+        description: 'LLM model for review (empty = DISCUSS_MODEL secret, OpenCode Zen direct via responses protocol)'
         required: false
         default: ''
         type: string
@@ -147,14 +147,11 @@ jobs:
         run: |
           # Direct OpenCode Zen calls, same pattern as discuss.yml / fix.yml:
           # no local proxy in between, no day/night split.
-          # OCR 只会 OpenAI chat/completions，而 muse-spark 在 Zen Go 上要求
-          # /responses（chat 直接 500，上游已知问题）。review-ai 默认改走
-          # chat 兼容模型；显式传 llm-model 仍可覆盖。discuss/fix 走 opencode
-          # SDK（/responses）不受影响，继续用 DISCUSS_MODEL。
+          # OCR 直调 CLI 走 openai-responses 协议，与 discuss/fix 同模型。
           MODEL="${INPUT_MODEL#openai/}"
           MODEL="${MODEL#anthropic/}"
           if [ -z "$MODEL" ]; then
-            MODEL="mimo-v2.5"
+            MODEL="$MUSE_MODEL"
           fi
           # Normalize base to the /v1 endpoint (accept with or without suffix).
           BASE="${MUSE_BASE%/}"
@@ -168,22 +165,77 @@ jobs:
           echo "session_id=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
           echo "Direct Zen selected (model+base masked in logs by Actions)"
 
-      - name: Run Open Code Review
-        id: ocr
-        uses: alibaba/open-code-review@v1.8.0
+      # OCR action 不支持 responses 协议（只会 chat），而 muse-spark 在 Zen Go
+      # 上要求 /responses（chat 直接 500）。故直调 ocr CLI 并配
+      # custom provider protocol=openai-responses，行为与 action 同构：
+      # review 结果落 /tmp/ocr-result.json + /tmp/ocr-stderr.log 供 verdict 步消费。
+      - uses: actions/checkout@v4
         with:
-          llm_url: ${{ steps.llm.outputs.base }}
-          llm_auth_token: ${{ secrets.DISCUSS_API_KEY_1 }}
-          llm_model: ${{ steps.llm.outputs.model }}
-          llm_extra_headers: "x-opencode-session=${{ steps.llm.outputs.session_id }},X-Session-Id=${{ steps.llm.outputs.session_id }}"
-          # 覆盖 action 默认的 {"thinking":{"type":"disabled"}}（Anthropic 形状防严格网关）
-          llm_extra_body: '{}'
-          llm_use_anthropic: 'false'
-          language: '中文'
-          incremental: 'true'
-          sticky_summary: 'true'
-          github_token: ${{ steps.app-token.outputs.token }}
-          ocr_version: '1.8.0'
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Open Code Review (CLI, responses protocol)
+        id: ocr
+        env:
+          OCR_VERSION: '1.12.4'
+          OCR_BASE: ${{ steps.llm.outputs.base }}
+          OCR_TOKEN: ${{ secrets.DISCUSS_API_KEY_1 }}
+          OCR_MODEL: ${{ steps.llm.outputs.model }}
+          OCR_SESSION: ${{ steps.llm.outputs.session_id }}
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set +e
+          npm install -g "@alibaba-group/open-code-review@${OCR_VERSION}"
+          git fetch origin "$BASE_REF" --depth=50
+          MERGE_BASE=$(git merge-base "origin/$BASE_REF" HEAD)
+          echo "MERGE_BASE=$MERGE_BASE HEAD=$HEAD_SHA"
+          ocr config unset provider
+          ocr config set provider zen-go
+          ocr config set custom_providers.zen-go.url "$OCR_BASE"
+          ocr config set custom_providers.zen-go.protocol openai-responses
+          ocr config set custom_providers.zen-go.api_key "$OCR_TOKEN"
+          ocr config set llm.model "$OCR_MODEL"
+          ocr config set llm.extra_headers "x-opencode-session=$OCR_SESSION,X-Session-Id=$OCR_SESSION"
+          ocr config set language "中文"
+          ARGS=(review --from "$MERGE_BASE" --to "$HEAD_SHA" --format json)
+          ocr "${ARGS[@]}" > /tmp/ocr-result.json 2>/tmp/ocr-stderr.log
+          OCR_EXIT_CODE=$?
+          set -e
+          echo "OCR_EXIT_CODE=$OCR_EXIT_CODE"
+          echo "=== OCR result ==="
+          cat /tmp/ocr-result.json
+          echo "=== OCR stderr ==="
+          cat /tmp/ocr-stderr.log
+          if [ "$OCR_EXIT_CODE" -ne 0 ]; then
+            echo "::error::ocr review exited with code $OCR_EXIT_CODE; see uploaded artifacts for details."
+            exit 1
+          fi
+
+      - name: Post review summary comment
+        if: always()
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          SUMMARY=$(python3 -c "
+          import json
+          try:
+              d = json.load(open('/tmp/ocr-result.json'))
+              cs = d.get('comments', [])
+              b = sum(1 for c in cs if c.get('severity') in ('critical', 'high'))
+              m = sum(1 for c in cs if c.get('severity') == 'medium')
+              print(f'AI 评审完成：{len(cs)} 条（blocking {b}，medium {m}）')
+          except Exception as e:
+              print(f'AI 评审未能产出结果：{e}')
+          ")
+          gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
+            -f body="🤖 **review-ai（muse-spark / responses）**: $SUMMARY
+          详情见本次运行 Artifacts（ocr-review-result）。" 2>/dev/null || true
 
       # OCR 失败时导出 session 明细（含每个文件的真实 LLM 错误），随 artifact 上传
       - name: Dump OCR session on failure
