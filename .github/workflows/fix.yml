@@ -334,9 +334,17 @@ jobs:
               echo "::error::Max auto-fix iterations ($MAX_ITERATIONS) reached (current: $AUTO_FIX_COUNT)"
             fi
 
-            # Count L2 rounds from PR comments
-            L2_ROUNDS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
-              --jq '[.[] | select(.body | test("L2 Round|已触发 L2|capability-resolver"))] | length' 2>/dev/null || echo "0")
+            # Count L2 rounds from PR comments.
+            # Only bot-authored dispatch receipts count ("已触发 L2 Round" by
+            # link-seek-bot): human steer / L2 progress chatter containing
+            # "L2 Round" must NOT inflate the counter, otherwise any @agent
+            # retry with L2 context welds the gate shut (PR #689 lesson).
+            # A human comment matching "重置 L2" / "RESET L2" resets the
+            # baseline: only dispatches after it are counted.
+            L2_ROUNDS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+              --jq '[.[] | {id: .id, login: .user.login, body: .body}] as $cs
+                | ([$cs[] | select(.body | test("重置\\s*L2|RESET\\s*L2"))] | last | .id // 0) as $reset
+                | [$cs[] | select(.id > $reset and .login == "link-seek-bot[bot]" and (.body | test("已触发 L2 Round")))] | length' 2>/dev/null || echo "0")
             L2_ROUND=$((L2_ROUNDS + 1))
 
             # Check if last L2 commit should be reverted (if L2 changed L1 but still failing)
