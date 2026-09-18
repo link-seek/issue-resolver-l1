@@ -309,14 +309,49 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
     })
 
 
+def _e2e_services_healthy() -> bool:
+    """Cheap live health check (no LLM): backend /health + frontend root."""
+    import urllib.request
+
+    backend = os.getenv("E2E_BACKEND_URL", "http://localhost:8080").rstrip("/")
+    frontend = os.getenv("E2E_FRONTEND_URL", "http://localhost:80").rstrip("/")
+    try:
+        with urllib.request.urlopen(backend + "/health", timeout=10) as r:
+            if r.status != 200:
+                return False
+    except Exception:
+        return False
+    for url in (frontend, frontend + "/health"):
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            continue
+    return False
+
+
 def run_e2e_verification() -> dict | None:
     """Run E2E tests after agent finishes. Returns results dict or None if skipped.
     Same pattern as fix_pr.py: hot-reload env means no rebuild needed for dev
     compose; backend URL comes from E2E_BACKEND_URL (default localhost:8080)."""
     e2e_ready = os.getenv("E2E_DOCKER_READY", "false")
     if e2e_ready != "true":
-        print("E2E Docker services not ready, skipping verification")
-        return None
+        e2e_unhealthy = os.getenv("E2E_UNHEALTHY", "").strip()
+        if not e2e_unhealthy:
+            print("E2E Docker services not ready, skipping verification")
+            return None
+        # Compose exists but was unhealthy at startup. The agent was told to
+        # recover it first, so re-check LIVE health instead of trusting the
+        # stale startup flag. Recovered -> run the suite; still down ->
+        # infra failure (counts as failed round, NOT a silent skip that
+        # would blind-push unverified code).
+        if _e2e_services_healthy():
+            print("E2E services recovered since startup, running verification")
+        else:
+            print(f"E2E services still down (startup: {e2e_unhealthy}), infra failure")
+            return {"passed": 0, "failed": -1, "exit_code": -1,
+                    "output_tail": f"E2E infra down, not product code. Startup report: {e2e_unhealthy}. Recover compose services, then re-verify."}
 
     frontend_dir = os.path.join(os.getcwd(), "frontend")
     if not os.path.exists(os.path.join(frontend_dir, "package.json")):
@@ -612,6 +647,18 @@ def main():
         secrets=secrets,
         max_iteration_per_run=500,
     )
+
+    # E2E env was unhealthy at startup: tell the agent to recover infra
+    # FIRST (it can: re-pull / rebuild / restart compose) instead of
+    # discovering a dead backend over several wasted verification rounds.
+    _e2e_unhealthy = os.environ.get("E2E_UNHEALTHY", "").strip()
+    if _e2e_unhealthy:
+        task_prompt += f"""
+## ⚠️ E2E 环境启动时就不健康（先恢复环境，再修代码）
+- workflow 起服务时报告：{_e2e_unhealthy}
+- 常见原因：GHCR 镜像拉取 denied/窗口期、compose 服务没起来。先 `docker compose ps` 定位，重拉镜像 / `docker compose up -d --build` / 重启恢复
+- `curl -sf localhost:8080/health && curl -sf localhost/` 通了之后再跑测试；两次恢复尝试后仍不通就直接停手并说明是 infra 问题，不要把服务全灭的失败当产品 bug 反复修
+"""
 
     try:
         conversation.send_message(task_prompt)
