@@ -249,6 +249,20 @@ jobs:
               COMBINED+="\n\n## PR Changes (diff)\n$PR_DIFF"
             fi
 
+            # Human Steer：一线人工指令，第一优先级输入（2026-09-18 起）。
+            # 背景：人工 @agent/steer 写在 issue comments，旧管线从不 GET，
+            # agent 四轮裸奔。现取含 @agent 的人工评论（调用约定=指令，
+            # 顺带滤掉 L2 进度播报等噪音），取最后 2 条置顶置入。
+            # 只收 User 类型（过滤 bot/app），截断 4000 字符防上下文爆炸。
+            HUMAN_STEER=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
+              --jq '[.[] | select(.user.type == "User" and (.body | contains("@agent"))) | "**\(.user.login)** (\(.created_at)):\n\(.body)"] | .[-2:] | join("\n\n---\n\n")' 2>/dev/null | tail -c 4000 || echo "")
+            if [ -n "$HUMAN_STEER" ]; then
+              COMBINED="## Human Steer（最高优先级人工指令：与下方默认修复策略冲突时，以本节为准并在回复中声明）"$'\n'"$HUMAN_STEER"$'\n\n'"$COMBINED"
+              echo "Human steer injected ($(echo -n "$HUMAN_STEER" | wc -c) bytes)"
+            else
+              echo "No human steer since last push ($LAST_PUSH_AT)"
+            fi
+
             echo "fix_context<<CTX_EOF" >> $GITHUB_OUTPUT
             echo -e "$COMBINED" >> $GITHUB_OUTPUT
             echo "CTX_EOF" >> $GITHUB_OUTPUT
@@ -301,9 +315,12 @@ jobs:
           echo "auto_fix_count=$AUTO_FIX_COUNT" >> $GITHUB_OUTPUT
           echo "Auto-fix commits on branch: $AUTO_FIX_COUNT (max: $MAX_ITERATIONS)"
 
-          # ── 振荡检测：连续 3 轮 blocking findings 不收敛 → 提前触发 L2 ──
+          # ── 振荡检测：blocking findings 不收敛 → 挂人工（L2 已关停）──
+          # 人工兜底版（2026-09-18 起）：carry-over high 跨 2 轮还在即熔断，
+          # 不再等 3 轮（旧逻辑空转 3 轮才升级，已死）。git log 最新在前，
+          # 故 COUNT_ARR[0]=最新轮。两轮均 >0 且最新未下降 → 不收敛。
             OSCILLATING="false"
-          if [ "$AUTO_FIX_COUNT" -ge 3 ] && [ "$AUTO_FIX_COUNT" -lt "$MAX_ITERATIONS" ]; then
+          if [ "$AUTO_FIX_COUNT" -ge 2 ] && [ "$AUTO_FIX_COUNT" -lt "$MAX_ITERATIONS" ]; then
             BLOCKING_COUNTS=""
             for COMMIT_SHA in $(git log --format='%H' -3 2>/dev/null); do
               REVIEW_CHECK=$(gh api repos/$GITHUB_REPOSITORY/commits/$COMMIT_SHA/check-runs \
@@ -314,15 +331,20 @@ jobs:
                 BLOCKING_COUNTS="$BLOCKING_COUNTS $BLOCKING"
               fi
             done
-            # Check non-convergence: all 3 counts > 0 and last >= first
+            # Check non-convergence (2-round fast trip + legacy 3-round rule)
             COUNT_ARR=($BLOCKING_COUNTS)
+            if [ ${#COUNT_ARR[@]} -ge 2 ]; then
+              if [ "${COUNT_ARR[0]}" -gt 0 ] && [ "${COUNT_ARR[1]}" -gt 0 ] && [ "${COUNT_ARR[0]}" -ge "${COUNT_ARR[1]}" ]; then
+                OSCILLATING="true"
+              fi
+            fi
             if [ ${#COUNT_ARR[@]} -ge 3 ]; then
               if [ "${COUNT_ARR[0]}" -gt 0 ] && [ "${COUNT_ARR[1]}" -gt 0 ] && [ "${COUNT_ARR[2]}" -gt 0 ] && [ "${COUNT_ARR[2]}" -ge "${COUNT_ARR[0]}" ]; then
                 OSCILLATING="true"
               fi
             fi
             if [ "$OSCILLATING" = "true" ]; then
-              echo "::warning::Oscillation detected: blocking findings not converging over 3 rounds ($BLOCKING_COUNTS)"
+              echo "::warning::Oscillation detected: blocking findings not converging ($BLOCKING_COUNTS)"
             fi
           fi
 

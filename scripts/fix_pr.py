@@ -476,11 +476,12 @@ Docker 服务未启动，无法本地验证。如需复现 E2E 失败，请联�
 {e2e_failures_block}
 ## 步骤
 1. 获取审查评论：`gh api repos/{repo_name}/pulls/{pr_number}/comments --paginate`
+1b. 获取人工 steer：`gh api repos/{repo_name}/issues/{pr_number}/comments --paginate`，User 类型的评论为最高优先级指令，与默认策略冲突时遵 steer 并声明
 2. 获取失败的 CI：`gh api repos/{repo_name}/commits/$(gh api repos/{repo_name}/pulls/{pr_number} --jq '.head.sha')/check-runs --jq '.check_runs[] | select(.conclusion=="failure")'`
 3. 获取 review-ai annotations：找到 review-ai check run ID → `gh api repos/{repo_name}/check-runs/ID/annotations`
-4. 理解所有 blocking issues，阅读相关代码，逐个修复
+4. 先按根因分组 findings（同一根因只修一次），一致性问题优先删冗余分支、禁止新增 env 回退分支；再阅读相关代码修复
 5. 运行测试：`cargo test -- --nocapture`（Rust）或 `npm test -- --passWithNoTests`（JS）
-6. `git diff` 自检，确保最小改动
+6. `git diff` 自检：净行数不增长、无新增 env 回退分支
 {e2e_section}
 ## 限制
 - 不改 `.github/workflows/` 下的文件
