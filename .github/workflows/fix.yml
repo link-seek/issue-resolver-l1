@@ -334,55 +334,18 @@ jobs:
               echo "::error::Max auto-fix iterations ($MAX_ITERATIONS) reached (current: $AUTO_FIX_COUNT)"
             fi
 
-            # Count L2 rounds from PR comments.
-            # Only bot-authored dispatch receipts count ("已触发 L2 Round" by
-            # link-seek-bot): human steer / L2 progress chatter containing
-            # "L2 Round" must NOT inflate the counter, otherwise any @agent
-            # retry with L2 context welds the gate shut (PR #689 lesson).
-            # A human comment matching "重置 L2" / "RESET L2" resets the
-            # baseline: only dispatches after it are counted.
-            L2_ROUNDS=$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" --paginate \
-              --jq '[.[] | {id: .id, login: .user.login, body: .body}] as $cs
-                | ([$cs[] | select(.body | test("重置\\s*L2|RESET\\s*L2"))] | last | .id // 0) as $reset
-                | [$cs[] | select(.id > $reset and .login == "link-seek-bot[bot]" and (.body | test("已触发 L2 Round")))] | length' 2>/dev/null || echo "0")
-            L2_ROUND=$((L2_ROUNDS + 1))
-
-            # Check if last L2 commit should be reverted (if L2 changed L1 but still failing)
-            REVERT_LAST="false"
-            LAST_L2_COMMIT=$(gh api "repos/link-seek/issue-resolver-l1/commits?per_page=5" \
-              --jq '[.[] | select(.commit.message | startswith("L2: upgrade"))] | length' 2>/dev/null || echo "0")
-            if [ "$LAST_L2_COMMIT" -gt "0" ] && [ "$L2_ROUND" -gt "1" ]; then
-              REVERT_LAST="true"
-            fi
-
-            # L2 round limit: max 3 rounds
-            if [ "$L2_ROUND" -gt "3" ]; then
-              BODY="🧑 **Human intervention needed**: L2 has run 3 rounds without convergence.
-            - PR #${PR_NUMBER} still failing after 3 L2 upgrade cycles
-            - Auto-fix commits: ${AUTO_FIX_COUNT}
-            - Please review manually."
-              gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments -f body="$BODY" 2>/dev/null || true
-              echo "::error::L2 round limit (3) exceeded. Human intervention needed."
-              exit 1
-            fi
-
-            # Dispatch L2 (capability-resolver) to upgrade L1's capability
-            echo "Dispatching L2 (capability-resolver) round ${L2_ROUND}/3..."
-            gh api repos/link-seek/issue-resolver-l2/actions/workflows/capability-resolver.yml/dispatches \
-              -X POST \
-              -f ref=main \
-              -f "inputs[consumer-repo]=$GITHUB_REPOSITORY" \
-              -f "inputs[pr-number]=$PR_NUMBER" \
-              -f "inputs[head-sha]=$HEAD_SHA" \
-              -f "inputs[l2-round]=$L2_ROUND" \
-              -f "inputs[revert-last]=$REVERT_LAST" \
-              --raw-field "inputs[ci-failures]=$FIX_CONTEXT" \
-              --header "Authorization: token $PAT_TOKEN" \
-              || echo "Failed to dispatch L2"
-
-            BODY="⚠️ Auto-fix 已修 ${AUTO_FIX_COUNT} 轮仍未通过。已触发 L2 Round ${L2_ROUND}/3 (revert-last=${REVERT_LAST})。"
+            # ── L2 已关停（2026-09-18 起，EAP #689 空包弹教训）──
+            # L2 agent 曾 12 秒崩溃（OpenHands SDK × litellm 不兼容）却被
+            # capability-resolver.yml 的 if:always() 化妆成"completed"，
+            # 其结论不可信。在 L2 修复并通过验证前，升级链整体停用：
+            # 不计数、不派发，直接挂人工 steer。
+            # 恢复方法：删掉本段，从 git 历史找回 L2 dispatch 块即可。
+            BODY="🧑 **Human steer needed**（L2 已关停，不再自动升级）。
+            - PR #${PR_NUMBER} auto-fix ${AUTO_FIX_COUNT} 轮未收敛（blocking: ${BLOCKING_COUNTS:-n/a}）
+            - 请人工看 review-ai 全量 findings 后直接回 steer 意见，并 @agent 重试。"
             gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
-              -f body="$BODY"
+              -f body="$BODY" 2>/dev/null || true
+            echo "::error::Auto-fix not converging. L2 disabled; human steer needed."
             exit 1
           else
             echo "exceeded=false" >> $GITHUB_OUTPUT
