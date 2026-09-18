@@ -690,7 +690,7 @@ def main():
                                "output_tail": "e2e-gate failed:\n" + gate_results["output"][-800:]}
             else:
                 if gate_results is not None:
-                    print("e2e-gate passed ✓")
+                    print("e2e static gate passed ✓ (tags/files only, NOT service health)")
                 e2e_results = run_e2e_verification()
             if e2e_results is None:
                 print("E2E verification skipped (no Docker services)")

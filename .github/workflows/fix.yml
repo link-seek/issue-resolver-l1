@@ -535,25 +535,54 @@ jobs:
           fi
           echo "Starting E2E services with $COMPOSE_FILE (hot-reload)..."
           docker compose -f "$COMPOSE_FILE" up -d 2>&1 || true
-          # Wait for backend health (first cargo build may take 10+ minutes)
+          # Wait for backend health (first cargo build may take 10+ minutes).
+          # NOTE: loops must record success explicitly — falling through with
+          # e2e_ready=true on timeout burned 40min of agent tokens on a dead
+          # backend (EAP #691: ghcr denied -> :80/:8080 dark -> E2E 2/104 x4).
+          BACKEND_OK=false
           for i in $(seq 1 180); do
             if curl -sf http://localhost:8080/health 2>/dev/null; then
               echo "Backend healthy (attempt $i)"
+              BACKEND_OK=true
               break
             fi
             sleep 5
           done
           # Wait for frontend health
+          FRONTEND_OK=false
           for i in $(seq 1 60); do
             if curl -sf http://localhost:80 2>/dev/null || curl -sf http://localhost:80/health 2>/dev/null; then
               echo "Frontend healthy (attempt $i)"
+              FRONTEND_OK=true
               break
             fi
             sleep 3
           done
+          if [ "$BACKEND_OK" != "true" ] || [ "$FRONTEND_OK" != "true" ]; then
+            echo "::error::E2E services did not become healthy (backend=$BACKEND_OK frontend=$FRONTEND_OK). Failing fast without burning agent tokens."
+            docker compose -f "$COMPOSE_FILE" ps 2>&1 || true
+            docker compose -f "$COMPOSE_FILE" logs --tail=30 2>&1 || true
+            echo "e2e_ready=false" >> $GITHUB_OUTPUT
+            echo "compose_file=$COMPOSE_FILE" >> $GITHUB_OUTPUT
+            exit 1
+          fi
           echo "e2e_ready=true" >> $GITHUB_OUTPUT
           echo "E2E services ready: backend=http://localhost:8080 frontend=http://localhost:80"
           echo "compose_file=$COMPOSE_FILE" >> $GITHUB_OUTPUT
+
+      - name: Notify infra failure (E2E env never healthy)
+        if: failure() && steps.start-e2e.conclusion == 'failure'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TARGET_NUMBER: ${{ steps.context.outputs.target_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # start-e2e failed: services never came up. Tell the issue it's infra
+          # (not product code) so humans fix the env instead of re-prompting.
+          # No agent tokens were burned: Run-fix never started.
+          BODY="🧑 **需要人工介入（infra）**：E2E 环境没起来（backend/frontend 健康检查 18 分钟未通过），本次**未消耗 agent**、未做任何代码改动。请检查：GHCR 镜像拉取（denied/窗口期）、compose 服务状态。环境恢复后评论 \`@agent\` 重跑。Run: ${RUN_URL}"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$TARGET_NUMBER/comments" -f body="$BODY" 2>/dev/null || true
+          gh api "repos/$GITHUB_REPOSITORY/issues/$TARGET_NUMBER/labels" -f 'labels[]=needs-human' 2>/dev/null || true
 
       - name: Install Playwright
         if: |

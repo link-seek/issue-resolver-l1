@@ -749,7 +749,7 @@ ocr review --audience agent 2>&1
                 continue
 
             if gate_results is not None and gate_results["passed"]:
-                print("e2e-gate passed ✓")
+                print("e2e static gate passed ✓ (tags/files only, NOT service health)")
 
             # Step 1: Run E2E
             e2e_results = run_e2e_verification()
