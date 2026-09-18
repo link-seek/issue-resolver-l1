@@ -26,12 +26,40 @@ def get_env(name: str, default: str | None = None) -> str:
     return v
 
 
+def _e2e_services_healthy() -> bool:
+    """Cheap live health check (no LLM): backend /health + frontend root."""
+    import urllib.request
+
+    def _ok(url: str) -> bool:
+        try:
+            with urllib.request.urlopen(url, timeout=10) as r:
+                return r.status == 200
+        except Exception:
+            return False
+
+    backend = os.getenv("E2E_BACKEND_URL", "http://localhost:8080").rstrip("/")
+    frontend = os.getenv("E2E_FRONTEND_URL", "http://localhost:80").rstrip("/")
+    if not _ok(backend + "/health"):
+        return False
+    return _ok(frontend) or _ok(frontend + "/health")
+
+
 def run_e2e_verification() -> dict | None:
     """Run E2E tests after agent finishes. Returns results dict or None if skipped."""
     e2e_ready = os.getenv("E2E_DOCKER_READY", "false")
     if e2e_ready != "true":
-        print("E2E Docker services not ready, skipping verification")
-        return None
+        e2e_unhealthy = os.getenv("E2E_UNHEALTHY", "").strip()
+        if not e2e_unhealthy:
+            print("E2E Docker services not ready, skipping verification")
+            return None
+        # Same live re-check as fix_issue.py: recovered -> verify,
+        # still down -> infra failure (never a silent skip).
+        if _e2e_services_healthy():
+            print("E2E services recovered since startup, running verification")
+        else:
+            print(f"E2E services still down (startup: {e2e_unhealthy}), infra failure")
+            return {"passed": 0, "failed": -1, "exit_code": -1,
+                    "output_tail": f"E2E infra down, not product code. Startup report: {e2e_unhealthy}. Recover compose services, then re-verify."}
 
     frontend_dir = os.path.join(os.getcwd(), "frontend")
     if not os.path.exists(os.path.join(frontend_dir, "package.json")):
@@ -465,7 +493,16 @@ def main():
 **禁止盲改** — 没有本地验证过的修改不要 push。
 """
     else:
-        e2e_section = """
+        _unhealthy = os.getenv("E2E_UNHEALTHY", "").strip()
+        if _unhealthy:
+            e2e_section = f"""
+## ⚠️ E2E 环境启动时就不健康（先恢复环境，再修代码）
+- workflow 起服务时报告：{_unhealthy}
+- 先 `docker compose ps` 定位，重拉镜像 / `docker compose up -d --build` / 重启恢复；`curl -sf localhost:8080/health && curl -sf localhost/` 通了再跑测试
+- 两次恢复尝试后仍不通就停手并说明是 infra 问题，不要把服务全灭的失败当产品 bug 反复修
+"""
+        else:
+            e2e_section = """
 ## E2E 测试
 Docker 服务未启动，无法本地验证。如需复现 E2E 失败，请联系 L2。
 """
@@ -749,7 +786,7 @@ ocr review --audience agent 2>&1
                 continue
 
             if gate_results is not None and gate_results["passed"]:
-                print("e2e-gate passed ✓")
+                print("e2e static gate passed ✓ (tags/files only, NOT service health)")
 
             # Step 1: Run E2E
             e2e_results = run_e2e_verification()
