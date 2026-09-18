@@ -67,7 +67,101 @@ permissions:
   actions: write
 
 jobs:
+  # 同 issue/PR 的重复 run 去重：调用方（on-fix.yml）用 cancel:false 排队，
+  # 后启动的 run 常常在前一个已交付后才开工，只能空转或被取消（EAP #691 一天 4 个 run）。
+  # 本 job 在 resolve 之前检查：若触发评论之后已有 bot 结论（推了 PR / fail-closed /
+  # 完成播报）且之后无人再说话，就绿退跳过。用户的新指令（时间戳更新）天然通过检查。
+  dedupe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Check for newer progress since trigger
+        id: check
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_NUMBER: ${{ inputs.issue-number }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          TARGET="${ISSUE_NUMBER:-$PR_NUMBER}"
+          if [ -z "$TARGET" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT
+            echo "reason=no-target" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          if [ -n "$COMMENT_ID" ] && [ "$COMMENT_ID" != "null" ]; then
+            TRIGGER_TS=$(gh api "repos/$GITHUB_REPOSITORY/issues/comments/$COMMENT_ID" --jq '.created_at' 2>/dev/null || echo "")
+          fi
+          if [ -z "${TRIGGER_TS:-}" ]; then
+            TRIGGER_TS=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" --jq '.created_at' 2>/dev/null || echo "")
+          fi
+          echo "Trigger ts: $TRIGGER_TS (comment $COMMENT_ID)"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$TARGET/comments" --paginate > /tmp/comments.json 2>/dev/null || echo "[]" > /tmp/comments.json
+          SKIP=$(TRIGGER_TS="$TRIGGER_TS" COMMENT_ID="$COMMENT_ID" python3 - << 'PYEOF'
+          import json, os
+          trigger = os.environ.get("TRIGGER_TS", "")
+          me = os.environ.get("COMMENT_ID", "")
+          try:
+              comments = json.load(open("/tmp/comments.json"))
+          except Exception:
+              comments = []
+          if not isinstance(comments, list):
+              comments = []
+          # bot 结论（计入）：推 PR / 推送 / fail-closed / 完成播报 / 方案已出。
+          # 噪声（不计）：开工声明、以前的去重跳过 note。
+          RESULT_KEYS = ("已创建 PR", "pushed", "fail-closed", "需要人工介入",
+                         "completed", "merged", "已合并", "Timed out waiting",
+                         "实施方案", "CI checks failed", "Auto-fix will retry",
+                         "quick-fix", "review-ai")
+          NOISE_KEYS = ("已开始处理", "dedupe-skip")
+          latest_result = ""
+          latest_human = ""
+          for c in comments:
+              cid = str(c.get("id", ""))
+              if cid == me or not c.get("created_at"):
+                  continue
+              body = c.get("body", "") or ""
+              ts = c["created_at"]
+              if ts <= trigger:
+                  continue
+              if (c.get("user") or {}).get("type") == "Bot":
+                  if any(k in body for k in NOISE_KEYS):
+                      continue
+                  if any(k in body for k in RESULT_KEYS) and ts > latest_result:
+                      latest_result = ts
+              else:
+                  if ts > latest_human:
+                      latest_human = ts
+          skip = bool(latest_result) and latest_human <= latest_result
+          print(f"latest_result={latest_result} latest_human={latest_human} skip={skip}")
+          print("true" if skip else "false")
+          PYEOF
+          )
+          SKIP=$(echo "$SKIP" | tail -n 1)
+          {
+            echo "skip=$SKIP"
+            echo "reason=dedupe-check"
+          } >> $GITHUB_OUTPUT
+          if [ "$SKIP" = "true" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/issues/$TARGET/comments" \
+              -f body="⏭️ 去重跳过 <!-- dedupe-skip -->：触发之后已有 bot 结论且无人再说话，本次 run 不再重复干活。" 2>/dev/null || true
+          fi
+
   resolve:
+    needs: [dedupe]
+    # dedupe 自身挂了就放行（去重只是优化，不能挡正常修复）
+    if: always() && (needs.dedupe.result != 'success' || needs.dedupe.outputs.skip != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
