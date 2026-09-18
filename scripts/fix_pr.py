@@ -30,22 +30,18 @@ def _e2e_services_healthy() -> bool:
     """Cheap live health check (no LLM): backend /health + frontend root."""
     import urllib.request
 
-    backend = os.getenv("E2E_BACKEND_URL", "http://localhost:8080").rstrip("/")
-    frontend = os.getenv("E2E_FRONTEND_URL", "http://localhost:80").rstrip("/")
-    try:
-        with urllib.request.urlopen(backend + "/health", timeout=10) as r:
-            if r.status != 200:
-                return False
-    except Exception:
-        return False
-    for url in (frontend, frontend + "/health"):
+    def _ok(url: str) -> bool:
         try:
             with urllib.request.urlopen(url, timeout=10) as r:
-                if r.status == 200:
-                    return True
+                return r.status == 200
         except Exception:
-            continue
-    return False
+            return False
+
+    backend = os.getenv("E2E_BACKEND_URL", "http://localhost:8080").rstrip("/")
+    frontend = os.getenv("E2E_FRONTEND_URL", "http://localhost:80").rstrip("/")
+    if not _ok(backend + "/health"):
+        return False
+    return _ok(frontend) or _ok(frontend + "/health")
 
 
 def run_e2e_verification() -> dict | None:
