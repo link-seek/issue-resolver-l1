@@ -601,6 +601,15 @@ jobs:
           E2E_EDITOR_PASSWORD: ${{ secrets.E2E_EDITOR_PASSWORD }}
           E2E_STRANGER_EMAIL: ${{ secrets.E2E_STRANGER_EMAIL }}
           E2E_STRANGER_PASSWORD: ${{ secrets.E2E_STRANGER_PASSWORD }}
+          # EAP 后端 single-source 只认 APP_SEED_*（E2E_* 回退已删，见 EAP state.rs），
+          # 而测试 helpers 同样只读 APP_SEED_*；冒烟 E2E 必须把 APP_SEED_* 透下去，
+          # 否则测试回落本地默认值、登录必挂（EAP #691 冒烟 2 failed 根因）。
+          APP_SEED_ADMIN_EMAIL: ${{ secrets.APP_SEED_ADMIN_EMAIL }}
+          APP_SEED_ADMIN_PASSWORD: ${{ secrets.APP_SEED_ADMIN_PASSWORD }}
+          APP_SEED_EDITOR_EMAIL: ${{ secrets.APP_SEED_EDITOR_EMAIL }}
+          APP_SEED_EDITOR_PASSWORD: ${{ secrets.APP_SEED_EDITOR_PASSWORD }}
+          APP_SEED_STRANGER_EMAIL: ${{ secrets.APP_SEED_STRANGER_EMAIL }}
+          APP_SEED_STRANGER_PASSWORD: ${{ secrets.APP_SEED_STRANGER_PASSWORD }}
         run: |
           echo "Running @smoke tagged tests"
           npx playwright test --grep @smoke
