@@ -696,6 +696,7 @@ jobs:
         env:
           OSS_BUCKET: ${{ inputs.oss-bucket }}
           OSS_REGION: ${{ inputs.oss-region }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
           AK_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
           AK_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
         run: |
@@ -741,6 +742,35 @@ jobs:
                   break
 
           print(f'Found {len(key_versions)} unique keys with versions')
+
+          # Skip when this deploy never touched the frontend: image tags are
+          # `<UTC build timestamp>-<sha>` and the frontend upload happens
+          # after the build, so any version newer than (tag - 30min margin)
+          # belongs to this deploy. None -> nothing to roll back, 0 min
+          # instead of a 6-8 min full-bucket walk (EAP: backend-only deploys).
+          # Any doubt falls through to the full rollback below (safe side).
+          try:
+              import re as _re
+              import time as _time
+              import calendar as _cal
+
+              _tag = os.environ.get('IMAGE_TAG', '')
+              _m = _re.match(r'(\d{14})-', _tag)
+              if _m:
+                  _deploy_ts = _cal.timegm(_time.strptime(_m.group(1), '%Y%m%d%H%M%S'))
+                  _newest = max(
+                      (v['last_modified'] for _vs in key_versions.values() for v in _vs
+                       if isinstance(v.get('last_modified'), (int, float))),
+                      default=0,
+                  )
+                  if _newest < _deploy_ts - 1800:
+                      print(f'Frontend untouched by deploy {_tag}, skipping rollback')
+                      print('\nSummary: 0 restored, 0 deleted, 0 skipped (unchanged, skipped)')
+                      sys.exit(0)
+          except SystemExit:
+              raise
+          except Exception as _e:
+              print(f'Change check inconclusive ({_e}), running full rollback')
 
           restored = 0
           deleted  = 0
