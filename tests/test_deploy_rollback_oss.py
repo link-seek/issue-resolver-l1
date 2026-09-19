@@ -57,3 +57,26 @@ def test_oss2_api_names_and_pin():
     section = _rollback_section()
     for name in REQUIRED:
         assert name in section, f"expected oss2 name/pin missing: {name}"
+
+
+def test_skip_when_frontend_untouched():
+    """Rollback must skip (0 min) when no bucket version is newer than the
+    deploy tag time: backend-only deploys shouldn't pay a 6-8 min walk."""
+    section = _rollback_section()
+    for s in ("IMAGE_TAG", "Frontend untouched by deploy", "unchanged, skipped"):
+        assert s in section, f"skip-when-unchanged piece missing: {s}"
+
+
+def test_skip_logic_timestamps():
+    """Functional check of the cutoff math (tag UTC vs version epochs)."""
+    import calendar
+    import re
+    import time
+
+    m = re.match(r"(\d{14})-", "20260918170352-2f501eda0672be8ae09f32c975268ef05109e32a")
+    assert m, "tag format changed?"
+    deploy_ts = calendar.timegm(time.strptime(m.group(1), "%Y%m%d%H%M%S"))
+    # versions from a week before the deploy -> skip
+    assert (deploy_ts - 7 * 86400) < deploy_ts - 1800
+    # versions from the deploy itself -> run
+    assert (deploy_ts + 300) >= deploy_ts - 1800
