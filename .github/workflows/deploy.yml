@@ -682,7 +682,9 @@ jobs:
     needs: rollback
     runs-on: ubuntu-latest
     if: always() && needs.rollback.result == 'success' && inputs.oss-bucket != ''
-    timeout-minutes: 5
+    # 20min：版本化大桶（500+ keys）5 分钟会被掐（EAP 2026-09-18 连掐两次，
+    # 现象与人工 cancel 一样易误判）。脚本本身幂等，重跑安全。
+    timeout-minutes: 20
     outputs:
       rollback-result: ${{ steps.frontend-rollback.outputs.result }}
     steps:
