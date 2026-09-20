@@ -468,7 +468,7 @@ jobs:
     needs: deploy
     if: always() && needs.deploy.result == 'success'
     runs-on: ${{ inputs.runner-label }}
-    timeout-minutes: 10
+    timeout-minutes: 25
     outputs:
       result: ${{ steps.collect-results.outputs.result }}
       failures: ${{ steps.collect-results.outputs.failures }}
