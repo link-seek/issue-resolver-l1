@@ -87,6 +87,28 @@ on:
         required: false
         default: 'oss-cn-shenzhen.aliyuncs.com'
         type: string
+      # Task3 试点：后端 provisionPilotConsumer 渲染模板的四个占位输入，
+      # 空 = 不透传（后端用各自默认值）。调用方在 with: 里显式传试点值。
+      pilot-repo-name:
+        description: 'Pilot consumer repo name (PILOT_REPO_NAME)'
+        required: false
+        default: ''
+        type: string
+      pilot-runner:
+        description: 'Pilot consumer deploy runner label (PILOT_RUNNER)'
+        required: false
+        default: ''
+        type: string
+      pilot-frontend-url:
+        description: 'Pilot consumer frontend URL (PILOT_FRONTEND_URL)'
+        required: false
+        default: ''
+        type: string
+      pilot-api-url:
+        description: 'Pilot consumer API URL (PILOT_API_URL)'
+        required: false
+        default: ''
+        type: string
 
     secrets:
       ACR_USERNAME:
@@ -407,6 +429,10 @@ jobs:
           PILOT_GITHUB_APP_ID: ${{ secrets.PILOT_GITHUB_APP_ID }}
           PILOT_GITHUB_APP_KEY: ${{ secrets.PILOT_GITHUB_APP_KEY }}
           PILOT_GITHUB_ORG: ${{ secrets.PILOT_GITHUB_ORG }}
+          PILOT_REPO_NAME: ${{ inputs.pilot-repo-name }}
+          PILOT_RUNNER: ${{ inputs.pilot-runner }}
+          PILOT_FRONTEND_URL: ${{ inputs.pilot-frontend-url }}
+          PILOT_API_URL: ${{ inputs.pilot-api-url }}
         run: |
           echo "=== Deploying tag: $IMAGE_TAG ==="
           bash ${{ inputs.deploy-script }}
