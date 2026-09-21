@@ -46,13 +46,13 @@ on:
 
     secrets:
       APP_ID:
-        required: true
+        required: false
       APP_PRIVATE_KEY:
         required: true
       DISCUSS_MODEL:
-        required: true
+        required: false
       DISCUSS_API_BASE:
-        required: true
+        required: false
       DISCUSS_API_KEY_1:
         required: true
 
@@ -128,7 +128,7 @@ jobs:
       - uses: actions/create-github-app-token@v1
         id: app-token
         with:
-          app-id: ${{ secrets.APP_ID }}
+          app-id: ${{ vars.APP_ID || secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           permission-contents: write
@@ -142,8 +142,8 @@ jobs:
         shell: bash
         env:
           INPUT_MODEL: ${{ inputs.llm-model }}
-          MUSE_MODEL: ${{ secrets.DISCUSS_MODEL }}
-          MUSE_BASE: ${{ secrets.DISCUSS_API_BASE }}
+          MUSE_MODEL: ${{ vars.DISCUSS_MODEL || secrets.DISCUSS_MODEL }}
+          MUSE_BASE: ${{ vars.DISCUSS_API_BASE || secrets.DISCUSS_API_BASE }}
         run: |
           # Direct OpenCode Zen calls, same pattern as discuss.yml / fix.yml:
           # no local proxy in between, no day/night split.

@@ -17,11 +17,11 @@ on:
       DISCUSS_API_KEY_1:
         required: true
       DISCUSS_API_BASE:
-        required: true
+        required: false
       DISCUSS_MODEL:
-        required: true
+        required: false
       APP_ID:
-        required: true
+        required: false
       APP_PRIVATE_KEY:
         required: true
       TAVILY_API_KEY:
@@ -60,7 +60,7 @@ jobs:
       - uses: actions/create-github-app-token@v1
         id: app-token
         with:
-          app-id: ${{ secrets.APP_ID }}
+          app-id: ${{ vars.APP_ID || secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
@@ -126,8 +126,8 @@ jobs:
         shell: bash
         working-directory: target-repo
         env:
-          LLM_MODEL: openai/${{ secrets.DISCUSS_MODEL }}
-          LLM_BASE_URL: ${{ secrets.DISCUSS_API_BASE }}
+          LLM_MODEL: openai/${{ vars.DISCUSS_MODEL || secrets.DISCUSS_MODEL }}
+          LLM_BASE_URL: ${{ vars.DISCUSS_API_BASE || secrets.DISCUSS_API_BASE }}
           LLM_API_KEY: ${{ secrets.DISCUSS_API_KEY_1 }}
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
@@ -136,7 +136,7 @@ jobs:
           REPO_NAME: ${{ github.repository }}
           DISCUSS_MODE: ${{ steps.mode.outputs.mode }}
           # For token auto-refresh
-          APP_ID: ${{ secrets.APP_ID }}
+          APP_ID: ${{ vars.APP_ID || secrets.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
@@ -144,7 +144,7 @@ jobs:
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           EAP_ADMIN_EMAIL: ${{ secrets.EAP_ADMIN_EMAIL }}
           EAP_ADMIN_PASSWORD: ${{ secrets.EAP_ADMIN_PASSWORD }}
-          LLM_MODEL_DISPLAY: ${{ secrets.DISCUSS_MODEL }}
+          LLM_MODEL_DISPLAY: ${{ vars.DISCUSS_MODEL || secrets.DISCUSS_MODEL }}
         run: |
           uv run --no-project --with openhands-sdk --with openhands-tools --with pyyaml --with cryptography \
             python ../issue-resolver-scripts/scripts/discuss.py
