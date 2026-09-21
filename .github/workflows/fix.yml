@@ -46,13 +46,13 @@ on:
 
     secrets:
       DISCUSS_MODEL:
-        required: true
+        required: false
       DISCUSS_API_BASE:
-        required: true
+        required: false
       DISCUSS_API_KEY_1:
         required: true
       APP_ID:
-        required: true
+        required: false
       APP_PRIVATE_KEY:
         required: true
       TAVILY_API_KEY:
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/create-github-app-token@v1
         id: app-token
         with:
-          app-id: ${{ secrets.APP_ID }}
+          app-id: ${{ vars.APP_ID || secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
@@ -168,7 +168,7 @@ jobs:
       - uses: actions/create-github-app-token@v1
         id: app-token
         with:
-          app-id: ${{ secrets.APP_ID }}
+          app-id: ${{ vars.APP_ID || secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
 
@@ -513,7 +513,7 @@ jobs:
           PR_NUMBER: ${{ steps.context.outputs.target_number }}
           HEAD_SHA: ${{ steps.context.outputs.head_sha }}
           FIX_CONTEXT: ${{ steps.context.outputs.fix_context }}
-          MUSE_MODEL: ${{ secrets.DISCUSS_MODEL }}
+          MUSE_MODEL: ${{ vars.DISCUSS_MODEL || secrets.DISCUSS_MODEL }}
           OPENCODE_API_KEY: ${{ secrets.DISCUSS_API_KEY_1 }}
         run: |
           echo "pushed=false" >> $GITHUB_OUTPUT
@@ -587,8 +587,8 @@ jobs:
           steps.quick-fix.outputs.pushed != 'true'
         shell: bash
         env:
-          MUSE_MODEL: ${{ secrets.DISCUSS_MODEL }}
-          MUSE_BASE: ${{ secrets.DISCUSS_API_BASE }}
+          MUSE_MODEL: ${{ vars.DISCUSS_MODEL || secrets.DISCUSS_MODEL }}
+          MUSE_BASE: ${{ vars.DISCUSS_API_BASE || secrets.DISCUSS_API_BASE }}
           MUSE_KEY: ${{ secrets.DISCUSS_API_KEY_1 }}
         run: |
           # Direct gateway calls, same pattern as discuss.yml: the SDK talks to
@@ -700,7 +700,7 @@ jobs:
           REPO_NAME: ${{ github.repository }}
           SEARCH_API_KEY: ${{ secrets.TAVILY_API_KEY }}
           AGENT_ENABLE_BROWSING: "true"
-          APP_ID: ${{ secrets.APP_ID }}
+          APP_ID: ${{ vars.APP_ID || secrets.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
@@ -808,7 +808,7 @@ jobs:
           REPO_NAME: ${{ github.repository }}
           ITERATION: ${{ steps.iter-check.outputs.auto_fix_count }}
           HUMAN_REVIEW_PATHS: ${{ inputs.human-review-paths }}
-          APP_ID: ${{ secrets.APP_ID }}
+          APP_ID: ${{ vars.APP_ID || secrets.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
           LMNR_PROJECT_API_KEY: ${{ secrets.LMNR_PROJECT_API_KEY }}
