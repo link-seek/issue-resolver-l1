@@ -131,6 +131,15 @@ on:
         required: false
       ALIYUN_ACCESS_KEY_SECRET:
         required: false
+      # Task3 试点：后端 provisionPilotConsumer 用 GitHub App 直连建试点仓，
+      # 需把 App 凭证从调用方 secrets 透传到部署环境（declared 才能被传入，
+      # 否则调用方 workflow 报 startup_failure）。
+      PILOT_GITHUB_APP_ID:
+        required: false
+      PILOT_GITHUB_APP_KEY:
+        required: false
+      PILOT_GITHUB_ORG:
+        required: false
 
 permissions:
   packages: read
@@ -395,6 +404,9 @@ jobs:
           APP_SEED_STRANGER_EMAIL: ${{ secrets.APP_SEED_STRANGER_EMAIL }}
           APP_SEED_STRANGER_PASSWORD: ${{ secrets.APP_SEED_STRANGER_PASSWORD }}
           APP_JWT__SECRET: ${{ secrets.APP_JWT__SECRET }}
+          PILOT_GITHUB_APP_ID: ${{ secrets.PILOT_GITHUB_APP_ID }}
+          PILOT_GITHUB_APP_KEY: ${{ secrets.PILOT_GITHUB_APP_KEY }}
+          PILOT_GITHUB_ORG: ${{ secrets.PILOT_GITHUB_ORG }}
         run: |
           echo "=== Deploying tag: $IMAGE_TAG ==="
           bash ${{ inputs.deploy-script }}
