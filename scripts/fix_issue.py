@@ -133,9 +133,16 @@ def get_env(name: str, default: str | None = None) -> str:
     return v
 
 
+GH_API_RETRY_ATTEMPTS = 5
+GH_API_RETRY_BASE_DELAY = 2
+
+
 def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict:
     url = f"https://api.github.com/repos/{path}"
     data = json.dumps(body).encode() if body else None
+    # Only idempotent methods are safe to blind-retry on 5xx (a POST may have
+    # been applied even when the gateway returns an error).
+    idempotent = method.upper() in ("GET", "HEAD")
 
     def _do_request(tok: str) -> dict:
         req = urllib.request.Request(url, data=data, headers={
@@ -145,15 +152,35 @@ def gh_api(method: str, path: str, token: str, body: dict | None = None) -> dict
         with urllib.request.urlopen(req, timeout=60) as resp:
             return json.load(resp)
 
-    try:
-        return _do_request(token)
-    except urllib.error.HTTPError as e:
-        if e.code == 401:
-            # Token expired — refresh and retry once
-            print("[token] Got 401, refreshing token...")
-            new_token = create_installation_token()
-            return _do_request(new_token)
-        raise
+    tok = token
+    refreshed = False
+    delay = GH_API_RETRY_BASE_DELAY
+    max_retries = GH_API_RETRY_ATTEMPTS - 1
+    for attempt in range(1, GH_API_RETRY_ATTEMPTS + 1):
+        try:
+            return _do_request(tok)
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and not refreshed:
+                # Token expired — refresh and retry once
+                refreshed = True
+                print("[token] Got 401, refreshing token...")
+                tok = create_installation_token()
+                continue
+            if e.code in (500, 502, 503, 504) and idempotent and attempt <= max_retries:
+                print(f"[api] HTTP {e.code} on {method} {path}; retry {attempt}/{max_retries} in {delay}s")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt <= max_retries:
+                print(f"[api] {type(e).__name__} on {method} {path}; retry {attempt}/{max_retries} in {delay}s")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+                continue
+            raise
+    raise RuntimeError("gh_api: retries exhausted")
+
 
 
 def analyze_db_risk(db_files: list[str]) -> str:
