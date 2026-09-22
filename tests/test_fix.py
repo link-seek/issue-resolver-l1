@@ -157,6 +157,46 @@ class TestGhApi(unittest.TestCase):
         result = gh_api("GET", "owner/repo/issues/1", "fake-token")
         self.assertEqual(result, {"key": "value"})
 
+    @patch('fix_issue.time.sleep', return_value=None)
+    @patch('fix_issue.urllib.request.urlopen')
+    def test_gh_api_get_retries_on_transient_5xx(self, mock_urlopen, _mock_sleep):
+        import urllib.error
+        ok = MagicMock()
+        ok.__enter__ = MagicMock(return_value=ok)
+        ok.__exit__ = MagicMock(return_value=None)
+        ok.read.return_value = b'{"key": "value"}'
+        err = urllib.error.HTTPError("http://x", 502, "Bad Gateway", {}, None)
+        mock_urlopen.side_effect = [err, err, ok]
+
+        from fix_issue import gh_api
+        result = gh_api("GET", "owner/repo/issues/1", "fake-token")
+        self.assertEqual(result, {"key": "value"})
+        self.assertEqual(mock_urlopen.call_count, 3)
+
+    @patch('fix_issue.time.sleep', return_value=None)
+    @patch('fix_issue.urllib.request.urlopen')
+    def test_gh_api_get_gives_up_after_max_attempts(self, mock_urlopen, _mock_sleep):
+        import urllib.error
+        err = urllib.error.HTTPError("http://x", 502, "Bad Gateway", {}, None)
+        mock_urlopen.side_effect = err
+
+        from fix_issue import gh_api
+        with self.assertRaises(urllib.error.HTTPError):
+            gh_api("GET", "owner/repo/issues/1", "fake-token")
+        self.assertEqual(mock_urlopen.call_count, 5)
+
+    @patch('fix_issue.time.sleep', return_value=None)
+    @patch('fix_issue.urllib.request.urlopen')
+    def test_gh_api_post_not_retried_on_5xx(self, mock_urlopen, _mock_sleep):
+        import urllib.error
+        err = urllib.error.HTTPError("http://x", 502, "Bad Gateway", {}, None)
+        mock_urlopen.side_effect = err
+
+        from fix_issue import gh_api
+        with self.assertRaises(urllib.error.HTTPError):
+            gh_api("POST", "owner/repo/issues/1/comments", "fake-token", body={"body": "x"})
+        self.assertEqual(mock_urlopen.call_count, 1)
+
 
 class TestRebaseLogic(unittest.TestCase):
     """Test the rebase-before-push logic in fix_issue.py."""
