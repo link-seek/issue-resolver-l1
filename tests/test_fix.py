@@ -198,6 +198,55 @@ class TestGhApi(unittest.TestCase):
         self.assertEqual(mock_urlopen.call_count, 1)
 
 
+class TestPollAndMergeEarlyExit(unittest.TestCase):
+    """poll_and_merge early-exit when repo has no CI/review chain."""
+
+    def _fake_gh_api(self, check_runs, reviews):
+        def fake(method, path, token, body=None):
+            if "check-runs" in path:
+                return {"check_runs": check_runs}
+            if "/reviews" in path:
+                return reviews
+            return {}
+        return fake
+
+    @patch('fix_issue.time.sleep', return_value=None)
+    @patch('fix_issue.get_valid_token', return_value="fake-token")
+    @patch('fix_issue.subprocess.run')
+    @patch('fix_issue.gh_api')
+    def test_early_exit_when_no_ci_no_review(self, mock_gh, mock_run, _tok, _sleep):
+        mock_run.return_value = MagicMock(stdout="deadbeef\n")
+        mock_gh.side_effect = self._fake_gh_api([], [])
+
+        from fix_issue import poll_and_merge
+        poll_and_merge("o/r", 1, 2, "http://x", max_wait=9999, interval=30,
+                       no_signal_grace_polls=3)
+
+        # 3 轮 × (check-runs + reviews) + 最后 1 次 POST 评论
+        self.assertEqual(mock_gh.call_count, 3 * 2 + 1)
+        last = mock_gh.call_args_list[-1]
+        self.assertEqual(last[0][0], "POST")
+        self.assertIn("comments", last[0][1])
+
+    @patch('fix_issue.time.sleep', return_value=None)
+    @patch('fix_issue.get_valid_token', return_value="fake-token")
+    @patch('fix_issue.subprocess.run')
+    @patch('fix_issue.gh_api')
+    def test_no_early_exit_when_bot_review_exists(self, mock_gh, mock_run, _tok, _sleep):
+        mock_run.return_value = MagicMock(stdout="deadbeef\n")
+        review = {"user": {"login": "github-actions[bot]"}, "state": "CHANGES_REQUESTED"}
+        mock_gh.side_effect = self._fake_gh_api([], [review])
+
+        from fix_issue import poll_and_merge
+        poll_and_merge("o/r", 1, 2, "http://x", max_wait=9999, interval=30,
+                       no_signal_grace_polls=3)
+
+        # 有 review 信号 → 走原逻辑（CHANGES_REQUESTED 直接返回），无提前退出评论
+        self.assertEqual(mock_gh.call_count, 2)
+        for call in mock_gh.call_args_list:
+            self.assertEqual(call[0][0], "GET")
+
+
 class TestRebaseLogic(unittest.TestCase):
     """Test the rebase-before-push logic in fix_issue.py."""
 
