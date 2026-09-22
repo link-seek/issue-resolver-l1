@@ -463,54 +463,49 @@ jobs:
           exit 1
 
   cf-wait:
-    name: Wait CF Pages Frontend
-    # 锚定拓扑: 前端在 Cloudflare Pages（main 即生产，push 自动部署）。
-    # 等本次发版 commit 的生产部署成功再放行 smoke；CF 未配置则跳过。
+    name: Record CF Pages Baseline
+    # 锚定拓扑: 前端在 Cloudflare Pages。EAP 前端为 ad_hoc 直传部署，
+    # deployment 无 commit 关联——无法按 commit 匹配，只能记录基线：
+    # 取当前最新成功生产部署 id，供失败时 rollback 用；
+    # 无成功部署/API 不通则失败（此时前端本身就不正常）。
     if: always() && inputs.image-tag != '' && inputs.cf-project != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 5
     outputs:
-      deploy-id: ${{ steps.wait.outputs.deploy-id }}
+      baseline-id: ${{ steps.baseline.outputs.baseline-id }}
+      baseline-url: ${{ steps.baseline.outputs.baseline-url }}
     steps:
-      - name: Wait for production deployment of this commit
-        id: wait
+      - name: Record current production deployment
+        id: baseline
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ inputs.cf-account-id }}
           CF_PROJECT: ${{ inputs.cf-project }}
-          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
           if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
-            echo "WARNING: CF token/account 未配，跳过 Pages 门禁"
+            echo "WARNING: CF token/account 未配，跳过 Pages 基线记录"
             exit 0
           fi
-          SHA="$(echo "$IMAGE_TAG" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)"
-          if [ -z "$SHA" ]; then
-            echo "WARNING: image-tag 里无 commit SHA，跳过 Pages 门禁"
-            exit 0
-          fi
-          echo "Waiting for CF Pages production deployment of commit $SHA..."
-          for i in $(seq 1 30); do
-            RESP="$(curl -sf --connect-timeout 10 --max-time 30 \
+          BASE="||"
+          for i in 1 2 3; do
+            LIST="$(curl -sf --connect-timeout 10 --max-time 30 \
               -H "Authorization: Bearer $CF_TOKEN" \
               "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments?per_page=10" 2>/dev/null || echo '{}')"
-            MATCH="$(echo "$RESP" | jq -r --arg sha "$SHA" \
-              '[.result[]? | select(.environment == "production" and .deployment_trigger.metadata.commit_hash == $sha)] | .[0] | "\(.latest_stage.status // "unknown")|\(.id // "")|\(.url // "")"' 2>/dev/null || echo 'unknown||')"
-            STATUS="$(echo "$MATCH" | cut -d'|' -f1)"
-            echo "attempt $i: status=$STATUS"
-            if [ "$STATUS" = "success" ]; then
-              echo "CF Pages production deployment ready: $(echo "$MATCH" | cut -d'|' -f3)"
-              echo "deploy-id=$(echo "$MATCH" | cut -d'|' -f2)" >> $GITHUB_OUTPUT
-              exit 0
+            BASE="$(echo "$LIST" | jq -r '[.result[]? | select(.environment == "production" and .latest_stage.status == "success")] | .[0] | "\(.id // "")|\(.url // "")|\(.created_on // "")"' 2>/dev/null || echo '||')"
+            if [ -n "$(echo "$BASE" | cut -d'|' -f1)" ]; then
+              break
             fi
-            if [ "$STATUS" = "failure" ] || [ "$STATUS" = "cancelled" ]; then
-              echo "::error::CF Pages production deployment failed for commit $SHA"
-              exit 1
-            fi
-            sleep 20
+            echo "attempt $i: no successful production deployment / API unreachable, retrying..."
+            sleep 10
           done
-          echo "::error::CF Pages production deployment not ready within 10 minutes"
-          exit 1
+          BASE_ID="$(echo "$BASE" | cut -d'|' -f1)"
+          if [ -z "$BASE_ID" ]; then
+            echo "::error::No successful CF Pages production deployment found"
+            exit 1
+          fi
+          echo "CF Pages baseline: $BASE_ID ($(echo "$BASE" | cut -d'|' -f2), created $(echo "$BASE" | cut -d'|' -f3))"
+          echo "baseline-id=$BASE_ID" >> $GITHUB_OUTPUT
+          echo "baseline-url=$(echo "$BASE" | cut -d'|' -f2)" >> $GITHUB_OUTPUT
 
   smoke-test:
     name: Smoke Test
@@ -596,7 +591,8 @@ jobs:
             echo "No SHA in image tag; E2E falls back to default branch"
           fi
 
-      # 前端门禁已移至 cf-wait job（等 CF Pages 生产部署就绪才放行 smoke）。
+      # CF 基线已由 cf-wait job 在发版前记录（供失败时回滚用）；
+      # ad_hoc 部署无 commit 关联，不做 SHA 门禁，smoke 直接测线上。
 
       - name: Checkout consumer repo for E2E
         uses: actions/checkout@v4
@@ -706,52 +702,40 @@ jobs:
 
   rollback-frontend:
     name: Rollback Frontend (CF Pages)
-    needs: rollback
+    needs: [rollback, cf-wait]
     runs-on: ubuntu-latest
     if: always() && needs.rollback.result == 'success' && inputs.image-tag != '' && inputs.cf-project != ''
     timeout-minutes: 10
     outputs:
       rollback-result: ${{ steps.frontend-rollback.outputs.result }}
     steps:
-      - name: Rollback CF Pages to previous production deployment
+      - name: Rollback CF Pages to baseline deployment
         id: frontend-rollback
         continue-on-error: true
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ inputs.cf-account-id }}
           CF_PROJECT: ${{ inputs.cf-project }}
-          IMAGE_TAG: ${{ inputs.image-tag }}
+          BASELINE_ID: ${{ needs.cf-wait.outputs.baseline-id }}
         run: |
-          # 回滚到上一个成功的生产部署：跳过本次发版 commit，取最新的 success。
-          # CF rollback 即时生效、免重建。
+          # 回滚到发版前记录的生产基线：前端没变 = 无操作成功；
+          # 发版期间变坏了 = 回到基线。CF rollback 即时生效、免重建。
           if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
             echo "WARNING: CF token/account 未配，前端回滚转手动"
             echo "result=skipped" >> $GITHUB_OUTPUT
             exit 0
           fi
-          SHA="$(echo "$IMAGE_TAG" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)"
-          if [ -z "$SHA" ]; then
-            echo "::error::image-tag 里无 commit SHA，无法定位回滚目标，转手动"
+          if [ -z "$BASELINE_ID" ]; then
+            echo "::error::No CF baseline recorded (cf-wait skipped/failed) — manual intervention required"
             echo "result=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
-          LIST="$(curl -sf --connect-timeout 10 --max-time 30 \
-            -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments?per_page=20" 2>/dev/null || echo '{}')"
-          TARGET="$(echo "$LIST" | jq -r --arg sha "$SHA" \
-            '[.result[]? | select(.environment == "production" and .latest_stage.status == "success" and .deployment_trigger.metadata.commit_hash != $sha)] | .[0] | "\(.id // "")|\(.url // "")"' 2>/dev/null || echo '|')"
-          TARGET_ID="$(echo "$TARGET" | cut -d'|' -f1)"
-          if [ -z "$TARGET_ID" ]; then
-            echo "::error::No previous CF production deployment found — manual intervention required"
-            echo "result=failure" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          echo "Rolling back CF Pages to deployment $TARGET_ID ($(echo "$TARGET" | cut -d'|' -f2))..."
+          echo "Rolling back CF Pages to baseline deployment $BASELINE_ID..."
           RB="$(curl -sf --connect-timeout 10 --max-time 60 -X POST \
             -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments/$TARGET_ID/rollback" 2>/dev/null || echo '{}')"
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments/$BASELINE_ID/rollback" 2>/dev/null || echo '{}')"
           if [ "$(echo "$RB" | jq -r '.success // false' 2>/dev/null)" = "true" ]; then
-            echo "CF Pages rollback completed: $TARGET_ID is production now"
+            echo "CF Pages rollback completed: $BASELINE_ID is production now"
             echo "result=success" >> $GITHUB_OUTPUT
           else
             echo "::error::CF Pages rollback API failed: $(echo "$RB" | jq -c '.errors // []' 2>/dev/null)"
@@ -820,7 +804,7 @@ jobs:
           elif [ "$CF_WAIT_RESULT" = "failure" ]; then
             LABELS="$LABELS,error-deploy"
             FAILURE_TYPE="cf-pages"
-            FAILURE_DETAIL="CF Pages production deployment failed or timed out"
+            FAILURE_DETAIL="CF Pages baseline missing: no successful production deployment or API unreachable"
           elif [ "$SMOKE_RESULT" = "failure" ]; then
             if echo "$FAILURES" | grep -qE "Backend health|GraphQL|E2E"; then
               LABELS="$LABELS,error-smoke"
