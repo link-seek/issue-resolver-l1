@@ -264,11 +264,17 @@ def run_tests(config: dict) -> bool:
 
 
 def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
-                   max_wait: int = 1800, interval: int = 30):
+                   max_wait: int = 1800, interval: int = 30,
+                   no_signal_grace_polls: int = 4):
     """Poll CI checks + AI review, merge when all green.
 
     Replaces gh pr merge --auto with explicit polling so we can
     feed failures back to the LLM for iterative fixes.
+
+    Early exit: if neither CI check-runs nor bot reviews appear within
+    ``no_signal_grace_polls`` polls, the repo has no CI/review chain
+    configured (e.g. docs-only repos) — stop waiting and leave the PR
+    for manual merge instead of burning the full timeout.
     """
     print(f"Polling CI + review for PR #{pr_num} (max {max_wait}s)...")
 
@@ -276,6 +282,7 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
         ["git", "rev-parse", "HEAD"], capture_output=True, text=True
     ).stdout.strip()
 
+    no_signal_polls = 0
     start = time.time()
     while time.time() - start < max_wait:
         github_token = get_valid_token()
@@ -296,6 +303,8 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
             return
 
         if pending:
+            # CI exists and is still running — real signal, keep waiting.
+            no_signal_polls = 0
             elapsed = int(time.time() - start)
             remaining = max_wait - elapsed
             print(f"Waiting: {len(pending)} checks pending ({remaining}s remaining)")
@@ -305,6 +314,25 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
         reviews = gh_api("GET", f"{repo_name}/pulls/{pr_num}/reviews", github_token)
         bot_reviews = [r for r in reviews if r.get("user", {}).get("login") == "github-actions[bot]"]
         latest_review = bot_reviews[-1] if bot_reviews else None
+
+        if not check_runs and not bot_reviews:
+            # No CI checks and no bot review in sight. Give the repo a short
+            # grace period (workflows may take a few seconds to register),
+            # then conclude none are configured.
+            no_signal_polls += 1
+            if no_signal_polls >= no_signal_grace_polls:
+                print(f"No CI checks or AI reviews after {no_signal_polls} polls — "
+                      f"assuming no CI/review configured; leaving PR for manual merge.")
+                gh_api("POST", f"{repo_name}/issues/{pr_num}/comments", github_token, {
+                    "body": (f"PR #{pr_num} is ready. No CI checks or AI review are configured "
+                             f"for this repo, so it is left for manual merge.")
+                })
+                return
+            print(f"No CI/review signal yet ({no_signal_polls}/{no_signal_grace_polls}); waiting...")
+            time.sleep(interval)
+            continue
+
+        no_signal_polls = 0
 
         if latest_review and latest_review.get("state") == "APPROVED":
             print("All CI passed + AI approved. Merging...")
