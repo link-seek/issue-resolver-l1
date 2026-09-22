@@ -3,6 +3,8 @@ name: Deploy
 # 流程: 部署验证（pipeline family: deploy）
 # 合并 deploy-pipeline.yml + deploy-broken-handler.yml
 # 失败处理内部闭环：分类 → auto-fix 或转人工（L2 已关停 2026-09-18）
+# 锚定拓扑: 前端 Cloudflare Pages + 后端 ECS（GHCR→ACR→deploy.sh）。
+# OSS 前端门禁/回滚已删除（EAP 前端已迁 CF Pages）。CF 未配置时相关步骤跳过。
 
 on:
   workflow_call:
@@ -77,15 +79,17 @@ on:
         required: false
         default: 'link-seek/enterprise-architecture-platform'
         type: string
-      oss-bucket:
-        description: 'OSS bucket for frontend (empty = skip frontend rollback)'
+      # 锚定拓扑: 前端固定 Cloudflare Pages（cf-project 为空 = 跳过 CF 门禁/回滚，
+      # 兼容无 CF 前端的消费仓）。
+      cf-account-id:
+        description: 'Cloudflare account ID for Pages frontend'
         required: false
-        default: 'eap-frontend-xyc'
+        default: ''
         type: string
-      oss-region:
-        description: 'OSS region endpoint'
+      cf-project:
+        description: 'Cloudflare Pages project name for frontend'
         required: false
-        default: 'oss-cn-shenzhen.aliyuncs.com'
+        default: ''
         type: string
       # Task3 试点：后端 provisionPilotConsumer 渲染模板的四个占位输入，
       # 空 = 不透传（后端用各自默认值）。调用方在 with: 里显式传试点值。
@@ -152,6 +156,8 @@ on:
       ALIYUN_ACCESS_KEY_ID:
         required: false
       ALIYUN_ACCESS_KEY_SECRET:
+        required: false
+      CLOUDFLARE_API_TOKEN:
         required: false
       # Task3 试点：后端 provisionPilotConsumer 用 GitHub App 直连建试点仓，
       # 需把 App 凭证从调用方 secrets 透传到部署环境（declared 才能被传入，
@@ -456,10 +462,60 @@ jobs:
           } >> $GITHUB_OUTPUT
           exit 1
 
+  cf-wait:
+    name: Wait CF Pages Frontend
+    # 锚定拓扑: 前端在 Cloudflare Pages（main 即生产，push 自动部署）。
+    # 等本次发版 commit 的生产部署成功再放行 smoke；CF 未配置则跳过。
+    if: always() && inputs.image-tag != '' && inputs.cf-project != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      deploy-id: ${{ steps.wait.outputs.deploy-id }}
+    steps:
+      - name: Wait for production deployment of this commit
+        id: wait
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ inputs.cf-account-id }}
+          CF_PROJECT: ${{ inputs.cf-project }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
+        run: |
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "WARNING: CF token/account 未配，跳过 Pages 门禁"
+            exit 0
+          fi
+          SHA="$(echo "$IMAGE_TAG" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)"
+          if [ -z "$SHA" ]; then
+            echo "WARNING: image-tag 里无 commit SHA，跳过 Pages 门禁"
+            exit 0
+          fi
+          echo "Waiting for CF Pages production deployment of commit $SHA..."
+          for i in $(seq 1 30); do
+            RESP="$(curl -sf --connect-timeout 10 --max-time 30 \
+              -H "Authorization: Bearer $CF_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments?per_page=10" 2>/dev/null || echo '{}')"
+            MATCH="$(echo "$RESP" | jq -r --arg sha "$SHA" \
+              '[.result[]? | select(.environment == "production" and .deployment_trigger.metadata.commit_hash == $sha)] | .[0] | "\(.latest_stage.status // "unknown")|\(.id // "")|\(.url // "")"' 2>/dev/null || echo 'unknown||')"
+            STATUS="$(echo "$MATCH" | cut -d'|' -f1)"
+            echo "attempt $i: status=$STATUS"
+            if [ "$STATUS" = "success" ]; then
+              echo "CF Pages production deployment ready: $(echo "$MATCH" | cut -d'|' -f3)"
+              echo "deploy-id=$(echo "$MATCH" | cut -d'|' -f2)" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            if [ "$STATUS" = "failure" ] || [ "$STATUS" = "cancelled" ]; then
+              echo "::error::CF Pages production deployment failed for commit $SHA"
+              exit 1
+            fi
+            sleep 20
+          done
+          echo "::error::CF Pages production deployment not ready within 10 minutes"
+          exit 1
+
   smoke-test:
     name: Smoke Test
-    needs: deploy
-    if: always() && needs.deploy.result == 'success'
+    needs: [deploy, cf-wait]
+    if: always() && needs.deploy.result == 'success' && (needs.cf-wait.result == 'success' || needs.cf-wait.result == 'skipped')
     runs-on: ${{ inputs.runner-label }}
     timeout-minutes: 25
     outputs:
@@ -540,29 +596,7 @@ jobs:
             echo "No SHA in image tag; E2E falls back to default branch"
           fi
 
-      - name: Wait for frontend CDN to match OSS origin
-        if: inputs.oss-bucket != ''
-        run: |
-          FE_URL="${{ inputs.frontend-url }}"
-          ORIGIN="https://${{ inputs.oss-bucket }}.${{ inputs.oss-region }}/index.html"
-          entry_hash() { curl -sf --connect-timeout 10 --max-time 30 "$1" 2>/dev/null | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | head -n 1; }
-          echo "Waiting for CDN ($FE_URL) to serve the OSS origin bundle..."
-          for i in $(seq 1 30); do
-            OSS_HASH="$(entry_hash "$ORIGIN")"
-            if [ -z "$OSS_HASH" ]; then
-              echo "WARNING: OSS origin unreachable; skipping CDN gate"
-              exit 0
-            fi
-            CDN_HASH="$(entry_hash "$FE_URL/index.html")"
-            echo "attempt $i: cdn=${CDN_HASH:-none} origin=$OSS_HASH"
-            if [ "$CDN_HASH" = "$OSS_HASH" ]; then
-              echo "Frontend CDN is fresh ($CDN_HASH)"
-              exit 0
-            fi
-            sleep 20
-          done
-          echo "::error::Frontend CDN did not converge to OSS origin within 10 minutes"
-          exit 1
+      # 前端门禁已移至 cf-wait job（等 CF Pages 生产部署就绪才放行 smoke）。
 
       - name: Checkout consumer repo for E2E
         uses: actions/checkout@v4
@@ -586,7 +620,7 @@ jobs:
         env:
           E2E_BASE_URL: ${{ inputs.frontend-url }}
           # 消费仓前端（EAP #544 起）经 E2E_API_URL 直连后端 API；
-          # 不传则 E2E 把 frontend-url 当 API 用，撞上 OSS 静态站 XML 必挂。
+          # 不传则 E2E 把 frontend-url 当 API 用，撞上前端静态站必挂。
           E2E_API_URL: ${{ inputs.api-url }}
           E2E_TEST_EMAIL: ${{ secrets.SMOKE_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.SMOKE_TEST_PASSWORD }}
@@ -671,135 +705,59 @@ jobs:
           exit 1
 
   rollback-frontend:
-    name: Rollback Frontend (OSS)
+    name: Rollback Frontend (CF Pages)
     needs: rollback
     runs-on: ubuntu-latest
-    if: always() && needs.rollback.result == 'success' && inputs.oss-bucket != ''
-    # 20min：版本化大桶（500+ keys）5 分钟会被掐（EAP 2026-09-18 连掐两次，
-    # 现象与人工 cancel 一样易误判）。脚本本身幂等，重跑安全。
-    timeout-minutes: 20
+    if: always() && needs.rollback.result == 'success' && inputs.image-tag != '' && inputs.cf-project != ''
+    timeout-minutes: 10
     outputs:
       rollback-result: ${{ steps.frontend-rollback.outputs.result }}
     steps:
-      - name: Install oss2 SDK
-        # pin：已按此版本核对 ListObjectVersionsResult 属性名（versions/delete_marker/next_versionid_marker）
-        run: pip install 'oss2==2.19.1'
-
-      - name: Rollback frontend to previous OSS version
+      - name: Rollback CF Pages to previous production deployment
         id: frontend-rollback
         continue-on-error: true
         env:
-          OSS_BUCKET: ${{ inputs.oss-bucket }}
-          OSS_REGION: ${{ inputs.oss-region }}
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ inputs.cf-account-id }}
+          CF_PROJECT: ${{ inputs.cf-project }}
           IMAGE_TAG: ${{ inputs.image-tag }}
-          AK_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
-          AK_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
         run: |
-          python3 << 'PYEOF'
-          import oss2, os, sys
-
-          bucket_name = os.environ['OSS_BUCKET']
-          region      = os.environ['OSS_REGION']
-          ak_id       = os.environ['AK_ID']
-          ak_secret   = os.environ['AK_SECRET']
-
-          # oss2.Bucket 会把 bucket_name virtual-host 到 endpoint 上；
-          # endpoint 里若已带 bucket 会拼出双 bucket 名导致 DNS 失败。
-          endpoint = f'https://{region}'
-          auth     = oss2.Auth(ak_id, ak_secret)
-          bucket   = oss2.Bucket(auth, endpoint, bucket_name)
-
-          key_versions = {}
-          result = bucket.list_object_versions()
-          while True:
-              for ov in result.versions:
-                  key_versions.setdefault(ov.key, []).append({
-                      'version_id': ov.versionid,
-                      'is_latest': ov.is_latest,
-                      'last_modified': ov.last_modified,
-                      'is_delete_marker': False,
-                      'size': ov.size,
-                  })
-              for dm in result.delete_marker:
-                  key_versions.setdefault(dm.key, []).append({
-                      'version_id': dm.versionid,
-                      'is_latest': dm.is_latest,
-                      'last_modified': dm.last_modified,
-                      'is_delete_marker': True,
-                      'size': 0,
-                  })
-              if result.is_truncated:
-                  result = bucket.list_object_versions(
-                      key_marker=result.next_key_marker,
-                      versionid_marker=result.next_versionid_marker,
-                  )
-              else:
-                  break
-
-          print(f'Found {len(key_versions)} unique keys with versions')
-
-          # Skip when this deploy never touched the frontend: image tags are
-          # `<UTC build timestamp>-<sha>` and the frontend upload happens
-          # after the build, so any version newer than (tag - 30min margin)
-          # belongs to this deploy. None -> nothing to roll back, 0 min
-          # instead of a 6-8 min full-bucket walk (EAP: backend-only deploys).
-          # Any doubt falls through to the full rollback below (safe side).
-          try:
-              import re as _re
-              import time as _time
-              import calendar as _cal
-
-              _tag = os.environ.get('IMAGE_TAG', '')
-              _m = _re.match(r'(\d{14})-', _tag)
-              if _m:
-                  _deploy_ts = _cal.timegm(_time.strptime(_m.group(1), '%Y%m%d%H%M%S'))
-                  _newest = max(
-                      (v['last_modified'] for _vs in key_versions.values() for v in _vs
-                       if isinstance(v.get('last_modified'), (int, float))),
-                      default=0,
-                  )
-                  if _newest < _deploy_ts - 1800:
-                      print(f'Frontend untouched by deploy {_tag}, skipping rollback')
-                      print('\nSummary: 0 restored, 0 deleted, 0 skipped (unchanged, skipped)')
-                      sys.exit(0)
-          except SystemExit:
-              raise
-          except Exception as _e:
-              print(f'Change check inconclusive ({_e}), running full rollback')
-
-          restored = 0
-          deleted  = 0
-          skipped  = 0
-
-          for key, versions in sorted(key_versions.items()):
-              versions.sort(key=lambda v: v['last_modified'], reverse=True)
-
-              if len(versions) < 2:
-                  if not versions[0]['is_delete_marker']:
-                      bucket.delete_object(key)
-                      print(f'Deleted new file: {key}')
-                      deleted += 1
-                  else:
-                      skipped += 1
-                  continue
-
-              previous = versions[1]
-              if previous['is_delete_marker']:
-                  bucket.delete_object(key)
-                  print(f'Deleted newly-added file: {key}')
-                  deleted += 1
-                  continue
-
-              bucket.copy_object(bucket_name, key, key,
-                                  params={'versionId': previous['version_id']})
-              print(f"Restored {key} -> version {previous['version_id']}")
-              restored += 1
-
-          print(f'\nSummary: {restored} restored, {deleted} deleted, {skipped} skipped')
-          if restored == 0 and deleted == 0:
-              print('WARNING: no files were restored or deleted')
-          PYEOF
-          echo "result=success" >> $GITHUB_OUTPUT
+          # 回滚到上一个成功的生产部署：跳过本次发版 commit，取最新的 success。
+          # CF rollback 即时生效、免重建。
+          if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
+            echo "WARNING: CF token/account 未配，前端回滚转手动"
+            echo "result=skipped" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          SHA="$(echo "$IMAGE_TAG" | grep -oE '[0-9a-f]{40}' | head -n 1 || true)"
+          if [ -z "$SHA" ]; then
+            echo "::error::image-tag 里无 commit SHA，无法定位回滚目标，转手动"
+            echo "result=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          LIST="$(curl -sf --connect-timeout 10 --max-time 30 \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments?per_page=20" 2>/dev/null || echo '{}')"
+          TARGET="$(echo "$LIST" | jq -r --arg sha "$SHA" \
+            '[.result[]? | select(.environment == "production" and .latest_stage.status == "success" and .deployment_trigger.metadata.commit_hash != $sha)] | .[0] | "\(.id // "")|\(.url // "")"' 2>/dev/null || echo '|')"
+          TARGET_ID="$(echo "$TARGET" | cut -d'|' -f1)"
+          if [ -z "$TARGET_ID" ]; then
+            echo "::error::No previous CF production deployment found — manual intervention required"
+            echo "result=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "Rolling back CF Pages to deployment $TARGET_ID ($(echo "$TARGET" | cut -d'|' -f2))..."
+          RB="$(curl -sf --connect-timeout 10 --max-time 60 -X POST \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments/$TARGET_ID/rollback" 2>/dev/null || echo '{}')"
+          if [ "$(echo "$RB" | jq -r '.success // false' 2>/dev/null)" = "true" ]; then
+            echo "CF Pages rollback completed: $TARGET_ID is production now"
+            echo "result=success" >> $GITHUB_OUTPUT
+          else
+            echo "::error::CF Pages rollback API failed: $(echo "$RB" | jq -c '.errors // []' 2>/dev/null)"
+            echo "result=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
 
       - name: Frontend rollback failed
         if: steps.frontend-rollback.outcome == 'failure'
@@ -813,9 +771,9 @@ jobs:
   # ═══════════════════════════════════════════════════════════
   handle-failure:
     name: Handle Deploy Failure
-    needs: [deploy, smoke-test, rollback, rollback-frontend]
+    needs: [deploy, smoke-test, rollback, rollback-frontend, cf-wait]
     runs-on: ubuntu-latest
-    if: always() && inputs.image-tag != '' && (needs.smoke-test.result == 'failure' || needs.deploy.result == 'failure' || needs.sync-to-acr.result == 'failure')
+    if: always() && inputs.image-tag != '' && (needs.smoke-test.result == 'failure' || needs.deploy.result == 'failure' || needs.sync-to-acr.result == 'failure' || needs.cf-wait.result == 'failure')
     steps:
       - uses: actions/create-github-app-token@v1
         id: app-token
@@ -833,6 +791,7 @@ jobs:
           SMOKE_RESULT: ${{ needs.smoke-test.result }}
           DEPLOY_RESULT: ${{ needs.deploy.result }}
           SYNC_RESULT: ${{ needs.sync-to-acr.result }}
+          CF_WAIT_RESULT: ${{ needs.cf-wait.result }}
           ROLLBACK_RESULT: ${{ needs.rollback.result }}
           ROLLBACK_OUTPUT: ${{ needs.rollback.outputs.rollback-result }}
           FE_ROLLBACK_RESULT: ${{ needs.rollback-frontend.result }}
@@ -858,6 +817,10 @@ jobs:
             LABELS="$LABELS,error-deploy"
             FAILURE_TYPE="deploy-script"
             FAILURE_DETAIL="${DEPLOY_FAILURE:-Deploy script or health check failed}"
+          elif [ "$CF_WAIT_RESULT" = "failure" ]; then
+            LABELS="$LABELS,error-deploy"
+            FAILURE_TYPE="cf-pages"
+            FAILURE_DETAIL="CF Pages production deployment failed or timed out"
           elif [ "$SMOKE_RESULT" = "failure" ]; then
             if echo "$FAILURES" | grep -qE "Backend health|GraphQL|E2E"; then
               LABELS="$LABELS,error-smoke"
@@ -886,7 +849,7 @@ jobs:
 
           FE_ROLLBACK_NOTE="No frontend rollback info."
           if [ "${FE_ROLLBACK_RESULT:-}" = "success" ] && [ "${FE_ROLLBACK_OUTPUT:-}" = "success" ]; then
-            FE_ROLLBACK_NOTE="Frontend rollback completed. Previous OSS version restored."
+            FE_ROLLBACK_NOTE="Frontend rollback completed. Previous CF Pages deployment restored."
           elif [ "${FE_ROLLBACK_RESULT:-}" = "success" ] && [ "${FE_ROLLBACK_OUTPUT:-}" = "failure" ]; then
             FE_ROLLBACK_NOTE="Frontend rollback ran but failed. Manual intervention required."
             LABELS="$LABELS,critical"
