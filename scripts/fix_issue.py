@@ -265,7 +265,8 @@ def run_tests(config: dict) -> bool:
 
 def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
                    max_wait: int = 1800, interval: int = 30,
-                   no_signal_grace_polls: int = 4):
+                   no_signal_grace_polls: int = 4,
+                   review_grace_polls: int = 8):
     """Poll CI checks + AI review, merge when all green.
 
     Replaces gh pr merge --auto with explicit polling so we can
@@ -275,6 +276,11 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
     ``no_signal_grace_polls`` polls, the repo has no CI/review chain
     configured (e.g. docs-only repos) — stop waiting and leave the PR
     for manual merge instead of burning the full timeout.
+
+    Green-without-review: if CI check-runs exist and are all green but
+    no bot review ever appears within ``review_grace_polls`` polls, the
+    repo has CI but no review flow (e.g. pilot-consumer) — auto-merge
+    instead of waiting forever for an AI verdict that never comes.
     """
     print(f"Polling CI + review for PR #{pr_num} (max {max_wait}s)...")
 
@@ -283,6 +289,7 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
     ).stdout.strip()
 
     no_signal_polls = 0
+    green_no_review_polls = 0
     start = time.time()
     while time.time() - start < max_wait:
         github_token = get_valid_token()
@@ -305,6 +312,7 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
         if pending:
             # CI exists and is still running — real signal, keep waiting.
             no_signal_polls = 0
+            green_no_review_polls = 0
             elapsed = int(time.time() - start)
             remaining = max_wait - elapsed
             print(f"Waiting: {len(pending)} checks pending ({remaining}s remaining)")
@@ -355,7 +363,36 @@ def poll_and_merge(repo_name: str, pr_num: int, issue_number: int, pr_url: str,
             print("AI review: CHANGES_REQUESTED. Auto-fix will handle.")
             return
 
-        print("Waiting for AI review verdict...")
+        if bot_reviews:
+            # Review 流存在（COMMENTED 等），等 verdict。
+            green_no_review_polls = 0
+            print("Waiting for AI review verdict...")
+            time.sleep(interval)
+            continue
+
+        # CI 全绿但从无 bot review：仓未配 review 流，给 grace 后直接合
+        # （pilot-consumer PR #12：45 分钟空等 verdict 教训）。
+        green_no_review_polls += 1
+        if green_no_review_polls >= review_grace_polls:
+            print(f"CI green + no AI review after {green_no_review_polls} polls — "
+                  f"assuming no review flow configured; auto-merging.")
+            github_token = get_valid_token()
+            result = subprocess.run(
+                ["gh", "pr", "merge", str(pr_num), "--squash", "--repo", repo_name],
+                capture_output=True, text=True,
+                env={**os.environ, "GH_TOKEN": github_token}
+            )
+            if result.returncode == 0:
+                print(f"PR #{pr_num} merged successfully (CI green, no review flow)!")
+                gh_api("POST", f"{repo_name}/issues/{issue_number}/comments", github_token, {
+                    "body": (f"PR #{pr_num} merged after CI passed "
+                             f"(no AI review flow configured in this repo).")
+                })
+            else:
+                print(f"Merge failed: {result.stderr}")
+            return
+        print(f"CI green, no AI review yet "
+              f"({green_no_review_polls}/{review_grace_polls}); waiting...")
         time.sleep(interval)
 
     print(f"Timeout after {max_wait}s waiting for CI + review.")

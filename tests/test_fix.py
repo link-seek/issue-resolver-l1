@@ -246,6 +246,53 @@ class TestPollAndMergeEarlyExit(unittest.TestCase):
         for call in mock_gh.call_args_list:
             self.assertEqual(call[0][0], "GET")
 
+    @patch('fix_issue.time.sleep', return_value=None)
+    @patch('fix_issue.get_valid_token', return_value="fake-token")
+    @patch('fix_issue.subprocess.run')
+    @patch('fix_issue.gh_api')
+    def test_merge_when_ci_green_no_review_flow(self, mock_gh, mock_run, _tok, _sleep):
+        """pilot-consumer PR #12 回归：有 CI 全绿、无 review 流 → grace 后直合。"""
+        mock_run.return_value = MagicMock(stdout="deadbeef\n", returncode=0)
+        green = [{"status": "completed", "conclusion": "success", "name": "pr-ci"}]
+        mock_gh.side_effect = self._fake_gh_api(green, [])
+
+        from fix_issue import poll_and_merge
+        poll_and_merge("o/r", 1, 2, "http://x", max_wait=9999, interval=30,
+                       review_grace_polls=3)
+
+        # 3 轮 × (check-runs + reviews) + 合并 + POST 评论
+        self.assertEqual(mock_gh.call_count, 3 * 2 + 1)
+        last = mock_gh.call_args_list[-1]
+        self.assertEqual(last[0][0], "POST")
+        self.assertIn("no AI review flow", last[0][3]["body"])
+        merges = [c for c in mock_run.call_args_list if c[0][0][:3] == ["gh", "pr", "merge"]]
+        self.assertEqual(len(merges), 1)
+
+    @patch('fix_issue.time.sleep', return_value=None)
+    @patch('fix_issue.time.time', side_effect=[0, 10, 20, 50])
+    @patch('fix_issue.get_valid_token', return_value="fake-token")
+    @patch('fix_issue.subprocess.run')
+    @patch('fix_issue.gh_api')
+    def test_no_merge_when_bot_commented_awaiting_verdict(self, mock_gh, mock_run,
+                                                          _tok, _time, _sleep):
+        """有 review 流（COMMENTED 未裁决）→ 继续等 verdict，不直合。"""
+        mock_run.return_value = MagicMock(stdout="deadbeef\n", returncode=0)
+        green = [{"status": "completed", "conclusion": "success", "name": "pr-ci"}]
+        review = {"user": {"login": "github-actions[bot]"}, "state": "COMMENTED"}
+        mock_gh.side_effect = self._fake_gh_api(green, [review])
+
+        from fix_issue import poll_and_merge
+        poll_and_merge("o/r", 1, 2, "http://x", max_wait=45, interval=30,
+                       review_grace_polls=3)
+
+        # 2 轮 × 2 GET + 超时收尾 POST；subprocess 只有 rev-parse，无 merge；
+        # POST 是超时提醒，不是合流评论
+        self.assertEqual(mock_gh.call_count, 5)
+        posts = [c for c in mock_gh.call_args_list if c[0][0] == "POST"]
+        self.assertEqual(len(posts), 1)
+        self.assertIn("Timed out", posts[0][0][3]["body"])
+        self.assertEqual(mock_run.call_count, 1)
+
 
 class TestRebaseLogic(unittest.TestCase):
     """Test the rebase-before-push logic in fix_issue.py."""
