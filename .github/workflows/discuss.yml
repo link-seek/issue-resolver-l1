@@ -101,6 +101,11 @@ jobs:
           path: issue-resolver-scripts
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Log L1 scripts version
+        run: |
+          echo "L1 scripts SHA=$(git -C issue-resolver-scripts rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "L1 scripts SHA=$(git -C issue-resolver-scripts rev-parse HEAD)"
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
