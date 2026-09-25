@@ -90,6 +90,11 @@ jobs:
           path: _issue-resolver
           ref: main
 
+      - name: Log L1 scripts version
+        run: |
+          echo "L1 scripts SHA=$(git -C _issue-resolver rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
+          echo "L1 scripts SHA=$(git -C _issue-resolver rev-parse HEAD)"
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
