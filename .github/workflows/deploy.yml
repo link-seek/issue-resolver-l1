@@ -465,9 +465,9 @@ jobs:
   cf-wait:
     name: Record CF Pages Baseline
     # 锚定拓扑: 前端在 Cloudflare Pages。EAP 前端为 ad_hoc 直传部署，
-    # deployment 无 commit 关联——无法按 commit 匹配，只能记录基线：
-    # 取当前最新成功生产部署 id，供失败时 rollback 用；
-    # 无成功部署/API 不通则失败（此时前端本身就不正常）。
+    # deployment 无 commit 关联。基线必须记发版起点 live 的生产部署
+    #（canonical），不能取部署列表首条：Pages rollback 只重指 production、
+    # 不产生新记录，回滚过的项目列表首条可能是已下线的构建。
     if: always() && inputs.image-tag != '' && inputs.cf-project != ''
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -486,26 +486,26 @@ jobs:
             echo "WARNING: CF token/account 未配，跳过 Pages 基线记录"
             exit 0
           fi
-          BASE="||"
+          PROJ='{}'
           for i in 1 2 3; do
-            LIST="$(curl -sf --connect-timeout 10 --max-time 30 \
+            PROJ="$(curl -sf --connect-timeout 10 --max-time 30 \
               -H "Authorization: Bearer $CF_TOKEN" \
-              "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments?per_page=10" 2>/dev/null || echo '{}')"
-            BASE="$(echo "$LIST" | jq -r '[.result[]? | select(.environment == "production" and .latest_stage.status == "success")] | .[0] | "\(.id // "")|\(.url // "")|\(.created_on // "")"' 2>/dev/null || echo '||')"
-            if [ -n "$(echo "$BASE" | cut -d'|' -f1)" ]; then
+              "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT" 2>/dev/null || echo '{}')"
+            BASE_ID="$(echo "$PROJ" | jq -r '.result.canonical_deployment.id // empty' 2>/dev/null || true)"
+            if [ -n "$BASE_ID" ]; then
               break
             fi
-            echo "attempt $i: no successful production deployment / API unreachable, retrying..."
+            echo "attempt $i: canonical deployment unknown / API unreachable, retrying..."
             sleep 10
           done
-          BASE_ID="$(echo "$BASE" | cut -d'|' -f1)"
           if [ -z "$BASE_ID" ]; then
-            echo "::error::No successful CF Pages production deployment found"
+            echo "::error::No live CF Pages production deployment found (canonical unknown)"
             exit 1
           fi
-          echo "CF Pages baseline: $BASE_ID ($(echo "$BASE" | cut -d'|' -f2), created $(echo "$BASE" | cut -d'|' -f3))"
+          BASE_URL="$(echo "$PROJ" | jq -r '.result.canonical_deployment.url // empty' 2>/dev/null || true)"
+          echo "CF Pages baseline (live): $BASE_ID ($BASE_URL)"
           echo "baseline-id=$BASE_ID" >> $GITHUB_OUTPUT
-          echo "baseline-url=$(echo "$BASE" | cut -d'|' -f2)" >> $GITHUB_OUTPUT
+          echo "baseline-url=$BASE_URL" >> $GITHUB_OUTPUT
 
   smoke-test:
     name: Smoke Test
@@ -717,12 +717,13 @@ jobs:
           CF_ACCOUNT: ${{ inputs.cf-account-id }}
           CF_PROJECT: ${{ inputs.cf-project }}
           BASELINE_ID: ${{ needs.cf-wait.outputs.baseline-id }}
+          IMAGE_TAG: ${{ inputs.image-tag }}
         run: |
-          # 回滚目标：发版前 cf-wait 记录的生产基线。
-          # 竞态加固：前端直传发生在基线之后 = 基线是旧版，回滚到基线正确；
-          # 直传若跑在基线之前（构建与 registry_package 事件竞态），基线就是刚上的
-          # 新版，此时“上一个成功生产部署”才是真正的回退目标。用部署列表判定，不猜。
-          # 前端没变（目标=当前生产）= 无操作成功；CF rollback 即时生效、免重建。
+          # 回滚目标：发版前 live 的生产基线（cf-wait 记的是 canonical，不是列表首条）。
+          # 本次发版上传的构建按 commit 排除：直传发生在 on-push，早于 on-deploy，
+          # 基线本身可能就是新构建——此时退到"本次发版之外的最新成功部署"。
+          # 目标已是 live = 无操作成功；8000039（已在生产）视为幂等成功。
+          # CF rollback 只重指 production、不产生新记录，即时生效、免重建。
           if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
             echo "WARNING: CF token/account 未配，前端回滚转手动"
             echo "result=skipped" >> $GITHUB_OUTPUT
@@ -733,34 +734,59 @@ jobs:
             echo "result=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
+          # image-tag 形如 <date>-<sha>：取出 commit，前缀匹配本次上传的构建。
+          SHA="${IMAGE_TAG##*-}"
           LIST="$(curl -sf --connect-timeout 10 --max-time 30 \
             -H "Authorization: Bearer $CF_TOKEN" \
             "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments?per_page=10" 2>/dev/null || echo '{}')"
-          IDS="$(echo "$LIST" | jq -r '[.result[]? | select(.environment == "production" and .latest_stage.status == "success") | .id] | .[]' 2>/dev/null || true)"
-          CURRENT="$(echo "$IDS" | sed -n '1p')"
-          PREVIOUS="$(echo "$IDS" | sed -n '2p')"
-          TARGET="$BASELINE_ID"
-          if [ -n "$CURRENT" ] && [ "$BASELINE_ID" = "$CURRENT" ] && [ -n "$PREVIOUS" ]; then
-            echo "Baseline $BASELINE_ID is already current production (upload raced ahead of cf-wait); falling back to previous $PREVIOUS"
-            TARGET="$PREVIOUS"
+          OWN="$(echo "$LIST" | jq -r --arg sha "$SHA" '[.result[]? | select(.environment == "production" and .latest_stage.status == "success") | select((.deployment_trigger.metadata.commit_hash // "") | startswith($sha[0:12])) | .id] | .[]' 2>/dev/null || true)"
+          CANDIDATES="$(echo "$LIST" | jq -r --arg sha "$SHA" '[.result[]? | select(.environment == "production" and .latest_stage.status == "success") | select(((.deployment_trigger.metadata.commit_hash // "") | startswith($sha[0:12])) | not) | .id] | .[]' 2>/dev/null || true)"
+          PROJ="$(curl -sf --connect-timeout 10 --max-time 30 \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT" 2>/dev/null || echo '{}')"
+          LIVE="$(echo "$PROJ" | jq -r '.result.canonical_deployment.id // empty' 2>/dev/null || true)"
+          echo "Baseline: $BASELINE_ID; live now: ${LIVE:-unknown}; own builds this release: $(echo "$OWN" | tr '\n' ' ')"
+          TARGET=""
+          if echo "$CANDIDATES" | grep -Fxq "$BASELINE_ID"; then
+            TARGET="$BASELINE_ID"
+          else
+            TARGET="$(echo "$CANDIDATES" | sed -n '1p')"
           fi
-          if [ -n "$CURRENT" ] && [ "$TARGET" = "$CURRENT" ]; then
-            echo "Frontend unchanged since baseline ($CURRENT is production); no-op success"
+          if [ -z "$TARGET" ]; then
+            echo "::error::No pre-release CF Pages deployment found — manual intervention required"
+            echo "result=failure" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          if [ -n "$LIVE" ] && [ "$TARGET" = "$LIVE" ]; then
+            echo "Target $TARGET is already live production; no-op success"
             echo "result=success" >> $GITHUB_OUTPUT
             exit 0
           fi
           echo "Rolling back CF Pages to deployment $TARGET..."
-          RB="$(curl -sf --connect-timeout 10 --max-time 60 -X POST \
-            -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments/$TARGET/rollback" 2>/dev/null || echo '{}')"
-          if [ "$(echo "$RB" | jq -r '.success // false' 2>/dev/null)" = "true" ]; then
+          HTTP_BODY="$(mktemp)"
+          for attempt in 1 2; do
+            HTTP_CODE="$(curl -s -o "$HTTP_BODY" -w '%{http_code}' --connect-timeout 10 --max-time 60 -X POST \
+              -H "Authorization: Bearer $CF_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments/$TARGET/rollback" 2>/dev/null || echo '000')"
+            if [ "$HTTP_CODE" = "200" ]; then
+              break
+            fi
+            echo "attempt $attempt: HTTP $HTTP_CODE, retrying..."
+            sleep 10
+          done
+          if [ "$(jq -r '.success // false' "$HTTP_BODY" 2>/dev/null)" = "true" ]; then
             echo "CF Pages rollback completed: $TARGET is production now"
             echo "result=success" >> $GITHUB_OUTPUT
+          elif [ "$(jq -r '.errors[0].code // 0' "$HTTP_BODY" 2>/dev/null)" = "8000039" ]; then
+            echo "Target $TARGET is already live (8000039); idempotent success"
+            echo "result=success" >> $GITHUB_OUTPUT
           else
-            echo "::error::CF Pages rollback API failed: $(echo "$RB" | jq -c '.errors // []' 2>/dev/null)"
+            echo "::error::CF Pages rollback API failed: HTTP $HTTP_CODE $(jq -c '.errors // []' "$HTTP_BODY" 2>/dev/null)"
             echo "result=failure" >> $GITHUB_OUTPUT
+            rm -f "$HTTP_BODY"
             exit 1
           fi
+          rm -f "$HTTP_BODY"
 
       - name: Frontend rollback failed
         if: steps.frontend-rollback.outcome == 'failure'
