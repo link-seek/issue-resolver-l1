@@ -2,15 +2,21 @@
 
 Topology: frontend = Cloudflare Pages (main = production), backend = ECS.
 
-Key finding (EAP drill 2026-09-22): EAP frontend uses ad_hoc direct-upload
-deployments whose trigger metadata has NO commit_hash — matching Pages
-deployments by release commit SHA can never hit. So:
-
-- cf-wait job: record the current latest successful production deployment
-  (id/url) BEFORE the release as rollback baseline; fail only when no
-  successful production deployment exists or the API is unreachable.
-- rollback-frontend job: on failure, POST the CF rollback endpoint for the
-  recorded baseline id (no-op if frontend unchanged, correct restore if broken).
+History:
+- EAP drill 2026-09-22: ad_hoc direct-uploads carried NO commit_hash, so
+  baseline recorded "latest successful production deployment".
+- Production evidence 2026-10-14 (EAP #755): our uploader passes
+  --commit-hash, so ad_hoc deployments DO carry commit metadata
+  (e.g. 7cf26b63). And Pages rollback only repoints production without
+  creating a new record, so "latest in list" is NOT the live deployment
+  after any rollback. Hence:
+- cf-wait job: record the LIVE production deployment (canonical_deployment
+  id/url) BEFORE the release as rollback baseline; fail only when the
+  canonical deployment is unknown or the API is unreachable.
+- rollback-frontend job: target the recorded baseline; exclude builds
+  uploaded by THIS release (commit prefix from image-tag) as fallback;
+  no-op when the target is already live; treat CF 8000039 (already live)
+  as idempotent success.
 - handle-failure: cf-pages type means "baseline missing", not "SHA not ready".
 
 Pure static check (no network): runs in the existing unit-test job
@@ -43,20 +49,20 @@ def test_cf_inputs_and_secret_declared():
 def test_cf_baseline_recorded():
     section = _section("Record current production deployment")
     for s in (
-        'environment == "production"',
-        "latest_stage.status",
+        "canonical_deployment",
         "baseline-id=",
-        "No successful CF Pages production deployment found",
+        "No live CF Pages production deployment found",
     ):
         assert s in section, f"cf baseline piece missing: {s}"
 
 
-def test_cf_baseline_does_not_match_sha():
-    """Regression: ad_hoc deployments carry no commit_hash — SHA matching
-    can never hit and stalls the pipeline (EAP drill 2026-09-22)."""
+def test_cf_baseline_is_live_not_latest():
+    """Regression (EAP #755, 2026-10-14): Pages rollback only repoints
+    production without creating a new record, so the list head may be an
+    offline build. Baseline must be the live canonical deployment."""
     section = _section("Record current production deployment")
-    assert "commit_hash" not in section, \
-        "cf baseline must not match deployments by commit SHA"
+    assert "canonical" in section, \
+        "cf baseline must record the live (canonical) deployment, not list head"
 
 
 def test_rollback_api_present():
@@ -74,8 +80,11 @@ def test_rollback_uses_baseline_id():
     section = _section("Rollback CF Pages to baseline deployment")
     assert "BASELINE_ID" in section, \
         "rollback must target the recorded baseline deployment id"
-    assert "commit_hash" not in section, \
-        "rollback must not pick target by commit SHA (ad_hoc has none)"
+    # Commit metadata is used ONLY to exclude this release's own builds as
+    # fallback (our uploader passes --commit-hash; verified live 2026-10-14).
+    # Positive selection stays baseline-first, never SHA-first.
+    assert "CANDIDATES" in section, \
+        "rollback must fall back to newest non-release build when baseline is stale"
 
 
 def test_rollback_graceful_when_unconfigured():
