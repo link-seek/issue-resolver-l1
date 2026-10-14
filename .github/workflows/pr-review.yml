@@ -18,6 +18,11 @@ on:
         required: false
         default: true
         type: boolean
+      enable-auto-fix:
+        description: 'Opt-in autonomous agent fix on blocking findings (default off; review gates stay on)'
+        required: false
+        default: false
+        type: boolean
       human-review-paths:
         description: 'JSON array of path patterns requiring human review'
         required: false
@@ -300,6 +305,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           ACCEPTED_HINTS: ${{ inputs.accepted-risk-hints }}
+          ENABLE_AUTO_FIX: ${{ inputs.enable-auto-fix }}
         run: |
           if [ ! -f /tmp/ocr-result.json ]; then
             echo "::error::OCR result file not found"
@@ -439,17 +445,24 @@ jobs:
           echo "OCR medium: $OCR_MEDIUM"
           echo "CI failures: $CI_FAILED"
 
-          # --- 5. Trigger auto-fix via @agent comment ---
+          # --- 5. Report verdict; auto-fix only on explicit opt-in ---
+          # Gates stay on: blocking findings always fail this job. The @agent
+          # post (autonomous fix loop) requires enable-auto-fix=true; humans
+          # can always comment '@agent' manually to summon the agent.
           if [ "$OCR_BLOCKING" -gt 0 ] || [ "$CI_FAILED" -gt 0 ]; then
             echo "::warning::Found $OCR_BLOCKING OCR blocking + $CI_FAILED CI failures"
-            echo "Triggering auto-fix via @agent comment..."
-            gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
-              -f body="@agent" 2>/dev/null || echo "Failed to post @agent comment"
+            if [ "$ENABLE_AUTO_FIX" = "true" ]; then
+              echo "Triggering auto-fix via @agent comment..."
+              gh api repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments \
+                -f body="@agent" 2>/dev/null || echo "Failed to post @agent comment"
+            else
+              echo "Auto-fix is off (opt-in). Comment '@agent' manually to summon the agent."
+            fi
             if [ "$OCR_BLOCKING" -gt 0 ]; then
               echo "::error::OCR review found $OCR_BLOCKING blocking issues"
               exit 1
             fi
-            echo "Auto-fix triggered for CI failures (OCR passed)"
+            echo "CI failures present (OCR passed); auto-fix is off, needs human triage"
             exit 0
           elif [ "$OCR_MEDIUM" -gt 0 ]; then
             echo "All gates passed with $OCR_MEDIUM medium issue(s) — not blocking. Comment '@agent' to manually trigger."
