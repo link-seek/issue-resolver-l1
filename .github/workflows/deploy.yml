@@ -2,7 +2,8 @@ name: Deploy
 
 # 流程: 部署验证（pipeline family: deploy）
 # 合并 deploy-pipeline.yml + deploy-broken-handler.yml
-# 失败处理内部闭环：分类 → auto-fix 或转人工（L2 已关停 2026-09-18）
+# 失败处理内部闭环：分类 → 转人工（auto-fix 默认关闭，需显式 opt-in）。
+# 门禁（e2e/smoke）与自动回滚常开，不受 auto-fix 开关影响。
 # 锚定拓扑: 前端 Cloudflare Pages + 后端 ECS（GHCR→ACR→deploy.sh）。
 # OSS 前端门禁/回滚已删除（EAP 前端已迁 CF Pages）。CF 未配置时相关步骤跳过。
 
@@ -19,6 +20,11 @@ on:
         required: false
         default: ''
         type: string
+      enable-auto-fix:
+        description: 'Opt-in autonomous agent fix on deploy failure (default off; gates and auto-rollback stay on)'
+        required: false
+        default: false
+        type: boolean
       runner-label:
         description: 'Self-hosted runner label (e.g. eap-prod)'
         required: false
@@ -205,7 +211,7 @@ jobs:
           export LABELS=$(gh issue view $ISSUE_NUMBER -R "$REPO" --json labels --jq '.labels[].name')
 
           RULES='[
-            {"label":"error-smoke","category":"code","action":"auto-fix","add-labels":["fix-me"],"comment":"Classified as **code bug** (error-smoke) — auto-fix engaged."},
+            {"label":"error-smoke","category":"code","action":"needs-human","add-labels":[],"comment":"Classified as **code bug** (error-smoke) — needs human triage (auto-fix is opt-in and off)."},
             {"label":"error-build","category":"infrastructure","action":"needs-human","add-labels":[],"comment":"Classified as **build/flow problem** (error-build) — escalating to human (L2 retired)."},
             {"label":"error-deploy","category":"infrastructure","action":"needs-human","add-labels":[],"comment":"Classified as **deploy/flow problem** (error-deploy) — escalating to human (L2 retired)."},
             {"label":null,"category":"unknown","action":"needs-human","add-labels":[],"comment":"Could not classify. Escalating to human (L2 retired)."}
@@ -853,7 +859,10 @@ jobs:
           elif [ "$SMOKE_RESULT" = "failure" ]; then
             if echo "$FAILURES" | grep -qE "Backend health|GraphQL|E2E"; then
               LABELS="$LABELS,error-smoke"
-              ACTION="auto-fix"
+              # auto-fix 默认关闭：显式 opt-in 才进入 agent 修复。
+              if [ "${{ inputs.enable-auto-fix }}" = "true" ]; then
+                ACTION="auto-fix"
+              fi
             else
               LABELS="$LABELS,error-deploy"
             fi
@@ -936,8 +945,8 @@ jobs:
           echo "action=${ACTION}" >> $GITHUB_OUTPUT
           echo "failure_type=${FAILURE_TYPE}" >> $GITHUB_OUTPUT
 
-      - name: Auto-fix (error-smoke)
-        if: always() && steps.handle-failure.outputs.action == 'auto-fix' && steps.handle-failure.outputs.issue_number != ''
+      - name: Auto-fix (error-smoke, opt-in only)
+        if: always() && inputs.enable-auto-fix == 'true' && steps.handle-failure.outputs.action == 'auto-fix' && steps.handle-failure.outputs.issue_number != ''
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           ISSUE_REPO: ${{ inputs.issue-repo }}
