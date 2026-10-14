@@ -641,7 +641,11 @@ jobs:
           APP_SEED_STRANGER_PASSWORD: ${{ secrets.APP_SEED_STRANGER_PASSWORD }}
         run: |
           echo "Running @smoke tagged tests"
-          npx playwright test --grep @smoke
+          # 生产冒烟允许 1 次重试：77 个串行用例零重试时，生产端任何一次
+          # 瞬时抖动都会触发全量回滚（EAP #755 三连挂全是不同用例的超时味）。
+          # 持续失败仍会挂（重试也过不了），不掩盖真 bug。CI 全量 e2e 保持
+          # 零重试以保信号严格。
+          npx playwright test --grep @smoke --retries 1
 
       - name: Collect E2E failures
         if: steps.e2e.outcome == 'failure'
