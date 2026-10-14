@@ -718,8 +718,11 @@ jobs:
           CF_PROJECT: ${{ inputs.cf-project }}
           BASELINE_ID: ${{ needs.cf-wait.outputs.baseline-id }}
         run: |
-          # 回滚到发版前记录的生产基线：前端没变 = 无操作成功；
-          # 发版期间变坏了 = 回到基线。CF rollback 即时生效、免重建。
+          # 回滚目标：发版前 cf-wait 记录的生产基线。
+          # 竞态加固：前端直传发生在基线之后 = 基线是旧版，回滚到基线正确；
+          # 直传若跑在基线之前（构建与 registry_package 事件竞态），基线就是刚上的
+          # 新版，此时“上一个成功生产部署”才是真正的回退目标。用部署列表判定，不猜。
+          # 前端没变（目标=当前生产）= 无操作成功；CF rollback 即时生效、免重建。
           if [ -z "$CF_TOKEN" ] || [ -z "$CF_ACCOUNT" ]; then
             echo "WARNING: CF token/account 未配，前端回滚转手动"
             echo "result=skipped" >> $GITHUB_OUTPUT
@@ -730,12 +733,28 @@ jobs:
             echo "result=failure" >> $GITHUB_OUTPUT
             exit 1
           fi
-          echo "Rolling back CF Pages to baseline deployment $BASELINE_ID..."
+          LIST="$(curl -sf --connect-timeout 10 --max-time 30 \
+            -H "Authorization: Bearer $CF_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments?per_page=10" 2>/dev/null || echo '{}')"
+          IDS="$(echo "$LIST" | jq -r '[.result[]? | select(.environment == "production" and .latest_stage.status == "success") | .id] | .[]' 2>/dev/null || true)"
+          CURRENT="$(echo "$IDS" | sed -n '1p')"
+          PREVIOUS="$(echo "$IDS" | sed -n '2p')"
+          TARGET="$BASELINE_ID"
+          if [ -n "$CURRENT" ] && [ "$BASELINE_ID" = "$CURRENT" ] && [ -n "$PREVIOUS" ]; then
+            echo "Baseline $BASELINE_ID is already current production (upload raced ahead of cf-wait); falling back to previous $PREVIOUS"
+            TARGET="$PREVIOUS"
+          fi
+          if [ -n "$CURRENT" ] && [ "$TARGET" = "$CURRENT" ]; then
+            echo "Frontend unchanged since baseline ($CURRENT is production); no-op success"
+            echo "result=success" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          echo "Rolling back CF Pages to deployment $TARGET..."
           RB="$(curl -sf --connect-timeout 10 --max-time 60 -X POST \
             -H "Authorization: Bearer $CF_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments/$BASELINE_ID/rollback" 2>/dev/null || echo '{}')"
+            "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/pages/projects/$CF_PROJECT/deployments/$TARGET/rollback" 2>/dev/null || echo '{}')"
           if [ "$(echo "$RB" | jq -r '.success // false' 2>/dev/null)" = "true" ]; then
-            echo "CF Pages rollback completed: $BASELINE_ID is production now"
+            echo "CF Pages rollback completed: $TARGET is production now"
             echo "result=success" >> $GITHUB_OUTPUT
           else
             echo "::error::CF Pages rollback API failed: $(echo "$RB" | jq -c '.errors // []' 2>/dev/null)"
