@@ -405,24 +405,32 @@ jobs:
           bash ${{ inputs.deploy-script }}
 
       - name: Ensure JWT secret in service
+        # 首选：部署脚本已把 APP_JWT__SECRET 写进 600 权限 env 文件
+        # （首次启动即有钥，无 crashloop、无计划外重启）→ 直接过。
+        # 回退：老消费仓的部署脚本若没写 env，才走 sed 注入（保持兼容）。
         if: always()
         env:
           APP_JWT__SECRET: ${{ secrets.APP_JWT__SECRET }}
         run: |
+          ENV_FILE="/opt/eap/eap-backend.env"
+          if [ -f "$ENV_FILE" ] && grep -q '^APP_JWT__SECRET=.\+' "$ENV_FILE"; then
+            echo "APP_JWT__SECRET present in env file — no injection needed"
+            exit 0
+          fi
           SERVICE_FILE="/etc/systemd/system/eap-backend.service"
           if [ ! -f "$SERVICE_FILE" ]; then
-            echo "Service file not found, skipping JWT injection"
-            exit 0
+            echo "::error::Neither env file nor service file present — deploy script did not run"
+            exit 1
           fi
           if grep -q 'APP_JWT__SECRET' "$SERVICE_FILE"; then
             echo "APP_JWT__SECRET already present in service file"
             exit 0
           fi
           if [ -z "$APP_JWT__SECRET" ]; then
-            echo "::warning::APP_JWT__SECRET is empty — backend will fail in production mode"
-            exit 0
+            echo "::error::APP_JWT__SECRET is empty and not in env file — backend will fail in production mode"
+            exit 1
           fi
-          echo "Injecting APP_JWT__SECRET into ExecStart of $SERVICE_FILE"
+          echo "Injecting APP_JWT__SECRET into ExecStart of $SERVICE_FILE (legacy fallback)"
           sed -i "/^ExecStart=/ s| \([^ ][^ ]*\)$| -e APP_JWT__SECRET=${APP_JWT__SECRET} \1|" "$SERVICE_FILE"
           systemctl daemon-reload
           systemctl restart eap-backend
