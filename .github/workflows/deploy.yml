@@ -615,6 +615,20 @@ jobs:
         working-directory: frontend
         run: npx playwright install chromium
 
+      - name: Warm edge cache before smoke
+        # 冒烟跑在生产 URL 上，而每次发布都是新哈希文件名 = 边缘冷缓存；
+        # 首批页面加载要多次回源，并发抖动下极易超时误杀。本步骤先把
+        # index + 全部哈希资产拉一遍（只暖缓存，失败不拦门）。
+        continue-on-error: true
+        env:
+          FE_URL: ${{ inputs.frontend-url }}
+        run: |
+          HTML="$(curl -s --max-time 60 "$FE_URL/" || true)"
+          echo "$HTML" | grep -o -e 'assets/[^"]*' | sort -u | while read -r f; do
+            curl -s -o /dev/null --max-time 60 "$FE_URL/$f" || echo "warm miss: $f"
+          done
+          echo "edge warm done"
+
       - name: Run E2E smoke tests
         id: e2e
         working-directory: frontend
